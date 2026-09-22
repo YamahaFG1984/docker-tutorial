@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>附录 · 下一步与术语表 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="22">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">附录</span>
+<h1>下一步与术语表</h1>
+<p class="lede">
+  恭喜你读完了全部 21 章！你已经走在掌握 Docker 和容器的路上，还顺便学会了在本地运行大模型。
+  这一页把全书的命令整理成速查表，把关键术语整理成词汇表，并给出接下来的学习路线。
+</p>
+
+<div id="chapter-toc"></div>
+
+<h2 id="roadmap">接下来学什么</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="学完 Docker 之后的学习路线图">
+  <rect class="bx-a" x="20" y="120" width="150" height="70" rx="12"/>
+  <text class="ttl on-a" x="95" y="148" text-anchor="middle">你在这里</text>
+  <text class="sm" x="95" y="170" text-anchor="middle">Docker 基础 ✓</text>
+
+  <path class="ln-a" d="M172 140 L250 60"  marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M172 155 L250 155" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M172 170 L250 250" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-b" x="255" y="20" width="220" height="80" rx="12"/>
+  <text class="ttl on-b" x="365" y="46" text-anchor="middle">编排：Kubernetes</text>
+  <text class="sm" x="365" y="68" text-anchor="middle">Pod · Deployment · Service</text>
+  <text class="sm" x="365" y="86" text-anchor="middle">本地可用 kind / minikube</text>
+
+  <rect class="bx-g" x="255" y="115" width="220" height="80" rx="12"/>
+  <text class="ttl on-g" x="365" y="141" text-anchor="middle">交付：CI/CD</text>
+  <text class="sm" x="365" y="163" text-anchor="middle">第 19 章已入门，继续深入</text>
+  <text class="sm" x="365" y="181" text-anchor="middle">部署策略与发布流程</text>
+
+  <rect class="bx-p" x="255" y="210" width="220" height="80" rx="12"/>
+  <text class="ttl on-p" x="365" y="236" text-anchor="middle">AI 与智能体</text>
+  <text class="sm" x="365" y="258" text-anchor="middle">Model Runner · MCP Toolkit</text>
+  <text class="sm" x="365" y="276" text-anchor="middle">Docker Sandboxes</text>
+
+  <path class="ln" d="M477 60 H530" marker-end="url(#ar)"/>
+  <path class="ln" d="M477 155 H530" marker-end="url(#ar)"/>
+  <path class="ln" d="M477 250 H530" marker-end="url(#ar)"/>
+  <rect class="bx-d" x="535" y="30" width="205" height="60" rx="10"/>
+  <text class="sm" x="637" y="56" text-anchor="middle">Helm · GitOps（Argo CD）</text>
+  <text class="sm" x="637" y="74" text-anchor="middle">服务网格 · 可观测性</text>
+  <rect class="bx-d" x="535" y="125" width="205" height="60" rx="10"/>
+  <text class="sm" x="637" y="151" text-anchor="middle">供应链安全：SBOM、SLSA</text>
+  <text class="sm" x="637" y="169" text-anchor="middle">Cosign 策略验证</text>
+  <rect class="bx-d" x="535" y="220" width="205" height="60" rx="10"/>
+  <text class="sm" x="637" y="246" text-anchor="middle">RAG · 智能体应用</text>
+  <text class="sm" x="637" y="264" text-anchor="middle">用 Compose 编排 AI 应用</text>
+</svg>
+<figcaption>图 A-1　三条可选的进阶路线</figcaption>
+</figure>
+
+<h3>Kubernetes</h3>
+<p>
+  理解了 Docker，Kubernetes 就是最自然的下一步。它的思想和 Swarm 很像（期望状态、调和、服务、滚动更新），但范围更大、社区更活跃。
+  你用 Docker 构建的镜像可以直接在 Kubernetes 上运行。Docker Desktop 自带一键启用的 Kubernetes（新版本默认用 kind 创建集群），非常适合入门。
+  原书作者还写了《Quick Start Kubernetes》和《The Kubernetes Book》，可以作为延伸阅读。
+</p>
+
+<h3>AI 编程助手与 Docker Sandboxes</h3>
+<p>
+  2026 年，Docker 推出了 <strong>Docker Sandboxes</strong>（<code>docker sbx</code>）：为 Claude Code、Codex、Gemini CLI 等 AI 编程助手提供基于 <strong>microVM</strong> 的隔离环境。
+  每个会话运行在独立的轻量虚拟机里，只挂载你的项目目录，助手可以放心地安装软件、甚至运行自己的容器，而不会影响你的主机。
+  这正是第 1 章“虚拟机 vs 容器”取舍的新应用：需要更强隔离时，用 microVM；需要轻量高效时，用容器。
+</p>
+
+<h3>参与社区</h3>
+<p>
+  云原生社区里有很多乐于助人的人。可以加入线上的 Docker 群组和讨论，或者搜索本地的 Docker / 云原生 Meetup。
+  <a href="https://docs.docker.com">Docker 官方文档</a>是最权威、更新最及时的参考资料，遇到问题先查它。
+</p>
+
+<h2 id="cheatsheet">命令速查总表</h2>
+
+<h3>镜像</h3>
+<div class="tw"><table class="cheat">
+  <tr><th>命令</th><th>作用</th><th>章节</th></tr>
+  <tr><td><code>docker pull 镜像[:标签|@摘要]</code></td><td>拉取镜像</td><td>6</td></tr>
+  <tr><td><code>docker images</code> / <code>docker image ls</code></td><td>列出本地镜像</td><td>6</td></tr>
+  <tr><td><code>docker inspect 镜像</code> / <code>docker history 镜像</code></td><td>查看元数据 / 构建历史</td><td>6</td></tr>
+  <tr><td><code>docker buildx imagetools inspect 镜像</code></td><td>查看仓库中的摘要与多架构清单</td><td>6</td></tr>
+  <tr><td><code>docker build -t 名:标签 .</code></td><td>构建镜像</td><td>8</td></tr>
+  <tr><td><code>docker tag</code> / <code>docker push</code></td><td>打标签 / 推送</td><td>8</td></tr>
+  <tr><td><code>docker rmi</code> / <code>docker image prune [-a]</code></td><td>删除镜像 / 清理</td><td>6</td></tr>
+  <tr><td><code>docker scout quickview / cves</code></td><td>漏洞扫描</td><td>6、16</td></tr>
+</table></div>
+
+<h3>容器</h3>
+<div class="tw"><table class="cheat">
+  <tr><th>命令</th><th>作用</th><th>章节</th></tr>
+  <tr><td><code>docker run -d --name n -p 主:容 镜像</code></td><td>启动容器</td><td>4、7</td></tr>
+  <tr><td><code>docker ps [-a]</code></td><td>列出容器</td><td>4、7</td></tr>
+  <tr><td><code>docker exec -it 容器 sh</code></td><td>进入容器</td><td>7</td></tr>
+  <tr><td><code>docker logs -f 容器</code></td><td>查看日志</td><td>7</td></tr>
+  <tr><td><code>docker stop</code> / <code>start</code> / <code>restart</code></td><td>生命周期管理</td><td>7</td></tr>
+  <tr><td><code>docker rm [-f] 容器</code> / <code>docker container prune</code></td><td>删除容器</td><td>7</td></tr>
+  <tr><td><code>docker inspect 容器</code> / <code>docker stats</code></td><td>详细信息 / 资源占用</td><td>7</td></tr>
+  <tr><td><code>docker debug 容器|镜像</code></td><td>调试精简容器</td><td>7</td></tr>
+</table></div>
+
+<h3>Compose、网络、卷</h3>
+<div class="tw"><table class="cheat">
+  <tr><th>命令</th><th>作用</th><th>章节</th></tr>
+  <tr><td><code>docker compose up -d</code> / <code>down [-v]</code></td><td>部署 / 删除应用</td><td>9</td></tr>
+  <tr><td><code>docker compose ps / logs / watch / config</code></td><td>查看状态、日志，热更新，查看最终配置</td><td>9</td></tr>
+  <tr><td><code>docker network create / ls / inspect / rm</code></td><td>管理网络</td><td>13、14</td></tr>
+  <tr><td><code>docker volume create / ls / inspect / rm / prune</code></td><td>管理卷</td><td>15</td></tr>
+</table></div>
+
+<h3>Swarm、AI 与系统</h3>
+<div class="tw"><table class="cheat">
+  <tr><th>命令</th><th>作用</th><th>章节</th></tr>
+  <tr><td><code>docker swarm init / join / leave</code></td><td>管理 swarm</td><td>12</td></tr>
+  <tr><td><code>docker stack deploy -c 文件 名称</code></td><td>部署 Swarm 应用</td><td>12</td></tr>
+  <tr><td><code>docker secret create / ls / rm</code></td><td>管理机密</td><td>16</td></tr>
+  <tr><td><code>docker model pull / run / ls / rm</code></td><td>管理本地大模型</td><td>10</td></tr>
+  <tr><td><code>docker version</code> / <code>docker info</code></td><td>版本 / 引擎信息</td><td>3</td></tr>
+  <tr><td><code>docker system df</code> / <code>docker system prune</code></td><td>磁盘占用 / 一键清理未使用的资源</td><td>6、17</td></tr>
+  <tr><td><code>docker events</code></td><td>实时查看引擎事件，排查反复重启、OOM</td><td>17</td></tr>
+</table></div>
+
+<h2 id="glossary">术语表</h2>
+
+<p>这里收录了全书最常用的 Docker 与容器术语（基于原书术语表翻译整理，并补充了 2026 年的新概念）。</p>
+
+<div class="tw"><table>
+  <tr><th>术语</th><th>解释</th></tr>
+  <tr><td>AI 加速硬件</td><td>GPU、NPU、TPU 等能加速 AI 模型执行（推理）的硬件</td></tr>
+  <tr><td>API</td><td>应用编程接口。Docker 的所有资源都定义在 Docker API 中，它是 RESTful 的，由 Docker 守护进程提供</td></tr>
+  <tr><td>基础镜像 Base image</td><td>所有镜像的第一层，由 Dockerfile 的 <code>FROM</code> 指令创建，通常包含应用所需的最小操作系统结构</td></tr>
+  <tr><td>Bake</td><td>Docker 的高层构建编排工具（<code>docker buildx bake</code>），用一个文件声明多个构建目标并行构建；Compose v5 的构建也委托给它</td></tr>
+  <tr><td>构建 Build</td><td>按 Dockerfile 中的指令逐步创建新镜像的过程</td></tr>
+  <tr><td>Build Cloud</td><td>在 Docker 云端基础设施上执行快速构建的订阅服务，团队可共享构建缓存</td></tr>
+  <tr><td>BuildKit</td><td>Docker 的构建引擎，实现高级缓存、多阶段构建、多架构构建等功能</td></tr>
+  <tr><td>Buildx</td><td>Docker 的构建客户端（CLI 插件），支持 BuildKit 全部新特性；自 Engine 23.0 / Desktop 4.19 起为默认</td></tr>
+  <tr><td>Capability</td><td>Linux 内核把 root 权限拆分成的细粒度权限单元，Docker 用它实现最小权限</td></tr>
+  <tr><td>cgroups 控制组</td><td>Linux 内核功能，Docker 用它限制容器使用的 CPU、内存、磁盘、网络资源</td></tr>
+  <tr><td>云原生 Cloud native</td><td>一种设计、构建和运行现代应用的方式。作者认为能自我修复、按需伸缩、滚动更新、版本回滚的应用就是云原生应用</td></tr>
+  <tr><td>集群存储 Cluster store</td><td>Docker Swarm 保存集群和应用状态的分布式数据库，基于 etcd，自动加密并复制到所有管理节点</td></tr>
+  <tr><td>CNM 容器网络模型</td><td>Docker 网络的设计规范，定义沙箱、端点、网络三个构件；libnetwork 是其实现</td></tr>
+  <tr><td>Compose</td><td>定义、部署和管理多容器应用的开放规范；Docker 实现了它并提供 <code>docker compose</code> 命令</td></tr>
+  <tr><td>容器 Container</td><td>一组被组织成看起来像普通操作系统的内核命名空间。每个容器运行一个应用，比虚拟机更小、更快、更便携</td></tr>
+  <tr><td>容器化 Containerize</td><td>把应用及其所有依赖打包成容器镜像的过程</td></tr>
+  <tr><td>容器运行时</td><td>每个节点上负责拉取镜像、启停容器等底层操作的软件。Docker 用两层运行时：高层的 containerd 管理生命周期，低层的 runc 与内核打交道</td></tr>
+  <tr><td>containerd</td><td>行业标准的容器运行时，被 Docker 和大多数 Kubernetes 集群使用，由 Docker 公司捐赠给 CNCF。读作 “container dee”</td></tr>
+  <tr><td>containerd 镜像存储</td><td>由 containerd 的 snapshotter 管理镜像的存储方式，Docker Engine 29 起为全新安装的默认值，原生支持多平台镜像和证明</td></tr>
+  <tr><td>期望状态 Desired state</td><td>集群和应用“应该是什么样子”，比如某服务应有 5 个监听 8080 端口的副本。调和的依据</td></tr>
+  <tr><td>摘要 Digest</td><td>根据镜像内容计算出的加密哈希，不可变，可以精确指定一个镜像</td></tr>
+  <tr><td>Docker</td><td>让容器化应用变得简单的平台：构建镜像、运行和管理独立容器及多容器应用</td></tr>
+  <tr><td>Docker Content Trust（DCT）</td><td>基于 Notary v1 的旧镜像签名机制，已退役：Engine 29 从 CLI 中移除，Notary 服务于 2026 年 12 月 8 日关闭。替代品是 Cosign / Notation</td></tr>
+  <tr><td>Docker Debug</td><td>CLI 插件，为不带调试工具的精简镜像和容器提供带工具箱的调试 shell</td></tr>
+  <tr><td>Docker Desktop</td><td>Linux、Mac、Windows 上的桌面应用，带图形界面和镜像管理、Model Runner 等高级功能</td></tr>
+  <tr><td>Docker Hardened Images（DHI）</td><td>Docker 维护的精简、加固、持续打补丁的基础镜像，2025 年 12 月起免费</td></tr>
+  <tr><td>Docker Hub</td><td>高性能、符合 OCI 标准的公共镜像仓库</td></tr>
+  <tr><td>Docker, Inc.</td><td>Docker 平台背后的美国科技公司</td></tr>
+  <tr><td>docker init</td><td>CLI 插件，分析项目并生成高质量的 Dockerfile、.dockerignore 和 Compose 文件</td></tr>
+  <tr><td>Docker Model Runner（DMR）</td><td>Docker 运行本地 AI 模型的原生工具，在容器之外直接使用宿主机硬件，提供 OpenAI 等兼容端点</td></tr>
+  <tr><td>Docker Sandboxes</td><td>基于 microVM 为 AI 编程助手提供隔离开发环境的产品（<code>docker sbx</code>）</td></tr>
+  <tr><td>Docker Scout</td><td>Docker 的漏洞扫描与供应链分析服务，集成在 CLI、Docker Hub 等处</td></tr>
+  <tr><td>Dockerfile</td><td>告诉 Docker 如何把应用构建成镜像的纯文本指令文件</td></tr>
+  <tr><td>etcd</td><td>Docker Swarm 使用的开源分布式数据库</td></tr>
+  <tr><td>GGUF</td><td>存储 LLM 权重和元数据的二进制文件格式</td></tr>
+  <tr><td>镜像 Image</td><td>包含应用代码、所有依赖和启动元数据的只读包，也叫 OCI 镜像、容器镜像、Docker 镜像</td></tr>
+  <tr><td>Ingress 网络</td><td>所有 Swarm 集群上都有的隐藏网络，用于向外部客户端发布服务（路由网格）</td></tr>
+  <tr><td>内核命名空间 Namespace</td><td>Linux 内核功能，Docker 用它把容器与宿主机进程及其他容器隔离开</td></tr>
+  <tr><td>层 Layer</td><td>镜像由层堆叠而成，每层包含对下层的修改；上层文件会遮盖下层同名文件</td></tr>
+  <tr><td>libcontainer / libnetwork</td><td>Docker 用来创建容器（通过 runc）/ 创建和管理容器网络的 Go 库</td></tr>
+  <tr><td>llama.cpp / vLLM</td><td>开源的 LLM 推理引擎。前者轻量、能在消费级 CPU 上运行，后者面向 GPU 上的高吞吐生产场景；都是 DMR 的可选后端</td></tr>
+  <tr><td>大语言模型 LLM</td><td>能参与人类对话、生成类人回答的 AI 模型</td></tr>
+  <tr><td>Manifest（OCI 清单）</td><td>描述镜像、模型等 OCI 制品的配置和层的 JSON 文档</td></tr>
+  <tr><td>Manifest list / Image index</td><td>一个标签下支持哪些架构的列表，是多架构镜像的基础</td></tr>
+  <tr><td>微服务 Microservices</td><td>现代应用的设计模式：每个功能作为独立的小应用（容器）开发，通过 API 协同工作</td></tr>
+  <tr><td>多架构构建</td><td>用一条 <code>docker build</code> 命令为多个平台/架构构建镜像</td></tr>
+  <tr><td>多阶段构建</td><td>一个 Dockerfile 中有多个 <code>FROM</code>，后面的阶段用 <code>COPY --from</code> 只拿需要的产物，得到很小的生产镜像</td></tr>
+  <tr><td>观察状态 Observed state</td><td>集群和应用当前的实际状态。Swarm 总在努力让它等于期望状态</td></tr>
+  <tr><td>OCI 开放容器倡议</td><td>负责制定镜像、运行时、分发等底层容器标准的轻量治理组织</td></tr>
+  <tr><td>OpenAI 兼容端点</td><td>按 OpenAI API 规范接收请求、返回响应的 API 服务</td></tr>
+  <tr><td>编排器 Orchestrator</td><td>部署和管理应用的软件，如 Docker Swarm 和 Kubernetes：保持应用健康、扩缩容等</td></tr>
+  <tr><td>Overlay 网络</td><td>横跨多个 swarm 节点的扁平二层网络，基于 VXLAN；不同主机上的容器可直接通信</td></tr>
+  <tr><td>Push / Pull</td><td>把镜像上传到 / 从仓库下载</td></tr>
+  <tr><td>量化 Quantization</td><td>在不过多牺牲准确度的前提下减小 AI 模型体积和内存需求的方法</td></tr>
+  <tr><td>调和 Reconciliation</td><td>持续观察应用状态、确保观察状态等于期望状态的过程</td></tr>
+  <tr><td>仓库 Registry / 镜像库 Repository</td><td>集中存放镜像的地方 / 仓库中存放一组相关镜像的区域，可按库设置权限</td></tr>
+  <tr><td>runc</td><td>OCI 运行时规范的参考实现，Docker 的低层运行时，读作 “run see”</td></tr>
+  <tr><td>SBOM</td><td>软件物料清单：镜像中所有软件包及版本的列表，漏洞扫描和供应链安全的基础</td></tr>
+  <tr><td>seccomp</td><td>Linux 内核功能，Docker 用它限制容器可用的系统调用</td></tr>
+  <tr><td>Secret 机密</td><td>Docker 在运行时安全地向容器注入敏感数据的方式</td></tr>
+  <tr><td>Service 服务</td><td>Docker Swarm 的对象，为容器增加自我修复、扩缩容、滚动更新和回滚能力</td></tr>
+  <tr><td>Sigstore / Cosign</td><td>现代的 OCI 原生镜像签名方案，支持基于身份的无密钥签名，是 DCT 的主要替代品</td></tr>
+  <tr><td>Spin</td><td>让构建和运行 Wasm 应用变得简单的框架，最初由 Fermyon 创建</td></tr>
+  <tr><td>Swarm</td><td>Docker 原生的编排平台，Kubernetes 的轻量替代</td></tr>
+  <tr><td>卷 Volume</td><td>容器存放需要保留的重要数据的地方，可以独立于容器创建和删除</td></tr>
+  <tr><td>Wasm（WebAssembly）</td><td>一种新的虚拟指令集架构，比传统容器更小、更快、更安全、更便携，可在任何有 Wasm 运行时的地方运行</td></tr>
+  <tr><td>YAML</td><td>一种数据序列化格式，Compose 文件用它编写；它是 JSON 的超集</td></tr>
+</table></div>
+
+<h2 id="changes">本教程相对原书的更新一览</h2>
+
+<p>方便已经读过原书的读者快速了解差异：</p>
+
+<div class="tw"><table>
+  <tr><th>章节</th><th>更新内容</th></tr>
+  <tr><td>第 3 章</td><td>Linux 安装改用 Docker 官方 apt 源（原书用 snap）；Engine 29 最低 API 1.44；containerd 镜像存储成为默认；rootless 模式</td></tr>
+  <tr><td>第 5 章</td><td>containerd 2.x；<code>live-restore</code> 配置</td></tr>
+  <tr><td>第 6 章</td><td>snapshotter 取代 graph driver；<code>--tree</code> 视图；Docker Desktop 移除 Scout 视图</td></tr>
+  <tr><td>第 7 章</td><td>退出码 137 与 PID 1 信号处理；<code>--init</code>；更正 Compose 与 Swarm 的重启策略写法；资源限制</td></tr>
+  <tr><td>第 8 章</td><td>构建检查 <code>--check</code>；exec 形式 CMD；.dockerignore；构建机密；Bake；构建历史</td></tr>
+  <tr><td>第 9 章</td><td>Compose v5；废弃 <code>version:</code> 和 <code>docker-compose</code>；更正卷挂载路径；healthcheck 依赖、watch、profiles</td></tr>
+  <tr><td>第 10 章</td><td>DMR 支持 Linux Engine；vLLM / Diffusers 后端；Anthropic / Ollama 兼容 API；Compose 顶层 <code>models:</code> 语法</td></tr>
+  <tr><td>第 11 章</td><td>Docker Desktop Wasm 功能已弃用</td></tr>
+  <tr><td>第 13 章</td><td>Engine 28 的网络加固；nftables；<code>ip</code> 命令替代 <code>brctl</code>；日志轮转</td></tr>
+  <tr><td>第 14 章</td><td>更正：数据平面加密使用 IPsec</td></tr>
+  <tr><td>第 15 章</td><td>新增绑定挂载、tmpfs、<code>-v</code> 与 <code>--mount</code>、卷备份</td></tr>
+  <tr><td>第 16 章</td><td>DCT 退役，改用 Cosign；Docker Hardened Images 免费；cgroup v1 弃用；Compose secrets；加固清单</td></tr>
+  <tr><td>第 17–21 章</td><td>原书没有的实战篇：排错手册、容器化开发环境与 Dev Containers、GitHub Actions 镜像流水线、部署到服务器（含 docker context）、Node / Python / Go / Java 生产级 Dockerfile</td></tr>
+</table></div>
+
+<div class="box tip">
+  <div class="t">&#128161; 最后的话</div>
+  <p>
+    Docker、AI 和云原生生态变化很快，两三年前的资料可能已经过时。遇到和本教程不一致的地方，以
+    <a href="https://docs.docker.com">Docker 官方文档</a>和各项目的发布说明为准。祝你玩转容器！&#128051;
+  </p>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

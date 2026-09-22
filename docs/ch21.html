@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 21 章 · 按语言写 Dockerfile — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="21">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 21 章</span>
+<h1>按语言写 Dockerfile</h1>
+<p class="lede">
+  第 8 章讲了 Dockerfile 的通用原理，但真正动手时，每种语言都有自己的“坑”：Node 的信号处理、Python 的依赖编译、Go 的静态链接、Java 的内存设置……
+  本章给出 <strong>Node.js、Python、Go、Java</strong> 四个生产级模板，逐行解释为什么这么写，以及各自最容易踩的坑。你可以直接拿去用。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>掌握所有语言通用的 Dockerfile 骨架和检查清单</li>
+    <li>根据语言和需求选择基础镜像：完整版、slim、alpine、distroless、scratch</li>
+    <li>写出 Node.js、Python（uv）、Go、Java（Spring Boot）的生产级 Dockerfile</li>
+    <li>避开各语言特有的坑：信号、musl、CGO、JVM 内存等</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<div class="box note">
+  <div class="t">&#9432; 版本说明</div>
+  <p>本章模板使用 2026 年 9 月的版本：Node.js 24（当前 Active LTS）、Python 3.14、Go 1.27、Java 25（Eclipse Temurin，LTS）。前面章节里的 <code>node:22</code> 等示例依然可用，新项目建议选当前的 LTS 版本。</p>
+</div>
+
+<h2 id="skeleton">通用骨架</h2>
+
+<p>不管什么语言，一个好的生产 Dockerfile 几乎都是同一个结构：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="生产级 Dockerfile 的通用骨架">
+  <rect class="bx-b" x="20" y="20" width="340" height="56" rx="10"/>
+  <text class="ttl on-b" x="36" y="44">① 固定版本的基础镜像</text>
+  <text class="mono" x="36" y="64" style="font-size:11px">FROM lang:版本-变体 AS build</text>
+  <rect class="bx-p" x="20" y="86" width="340" height="56" rx="10"/>
+  <text class="ttl on-p" x="36" y="110">② 先复制依赖清单，安装依赖</text>
+  <text class="mono" x="36" y="130" style="font-size:11px">COPY lockfile → RUN --mount=type=cache 安装</text>
+  <rect class="bx-a" x="20" y="152" width="340" height="56" rx="10"/>
+  <text class="ttl on-a" x="36" y="176">③ 再复制源码，编译 / 打包</text>
+  <text class="mono" x="36" y="196" style="font-size:11px">COPY . . → RUN build</text>
+  <rect class="bx-g" x="20" y="218" width="340" height="56" rx="10"/>
+  <text class="ttl on-g" x="36" y="242">④ 精简的运行阶段</text>
+  <text class="mono" x="36" y="262" style="font-size:11px">FROM 小镜像 · COPY --from · USER · CMD [...]</text>
+  <path class="ln" d="M190 78 V84"/><path class="ln" d="M190 144 V150"/><path class="ln" d="M190 210 V216"/>
+
+  <rect class="bx" x="400" y="20" width="340" height="254" rx="12"/>
+  <text class="ttl" x="420" y="46">为什么这样排？</text>
+  <text class="sm" x="420" y="74">② 在 ③ 之前：依赖很少变、代码经常变。</text>
+  <text class="sm" x="420" y="92">改代码时依赖层命中缓存（第 8 章图 8-7）。</text>
+  <text class="sm" x="420" y="120">锁文件（package-lock / uv.lock / go.sum）</text>
+  <text class="sm" x="420" y="138">保证每次安装的依赖完全一致。</text>
+  <text class="sm" x="420" y="166">缓存挂载让重建依赖层时也不必重新下载。</text>
+  <text class="sm" x="420" y="194">④ 只带走运行需要的东西：编译器、源码、</text>
+  <text class="sm" x="420" y="212">开发依赖、包管理器缓存统统留在前面的阶段。</text>
+  <text class="sm" x="420" y="240">非 root + exec 形式启动，</text>
+  <text class="sm" x="420" y="258">安全且能正确接收停止信号。</text>
+</svg>
+<figcaption>图 21-1　所有语言通用的 Dockerfile 骨架</figcaption>
+</figure>
+
+<h3>通用检查清单</h3>
+
+<div class="tw"><table>
+  <tr><th>检查项</th><th>做法</th><th>对应章节</th></tr>
+  <tr><td>基础镜像固定版本</td><td><code>node:24-alpine</code> 而不是 <code>node</code>；追求可重复可再加 <code>@sha256:</code></td><td>6</td></tr>
+  <tr><td>使用锁文件</td><td><code>npm ci</code>、<code>uv sync --locked</code>、<code>go mod download</code>、Maven/Gradle 锁定版本</td><td>8</td></tr>
+  <tr><td>依赖层在源码层之前</td><td>先 COPY 清单再安装，最后 COPY 源码</td><td>8</td></tr>
+  <tr><td>多阶段构建</td><td>构建工具不进入最终镜像</td><td>8</td></tr>
+  <tr><td>.dockerignore</td><td>排除 <code>.git</code>、本地依赖目录、构建产物、<code>.env</code></td><td>8</td></tr>
+  <tr><td>非 root 运行</td><td><code>USER</code> 指向一个普通用户</td><td>16</td></tr>
+  <tr><td>exec 形式启动</td><td><code>CMD ["程序", "参数"]</code>，并确认程序能处理 SIGTERM</td><td>7、8</td></tr>
+  <tr><td>日志写到 stdout</td><td>不要写日志文件，交给 Docker 日志驱动</td><td>13</td></tr>
+  <tr><td>配置走环境变量</td><td>同一个镜像，靠不同环境变量跑在不同环境</td><td>9</td></tr>
+</table></div>
+
+<h2 id="base">选择基础镜像</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="基础镜像变体从大到小的对比">
+  <text class="lbl" x="20" y="22">从大到小（以 Python 为例，数字为大致解压后大小）</text>
+  <rect class="bx-r" x="20"  y="36" width="140" height="190" rx="10"/>
+  <text class="ttl on-r" x="90" y="62" text-anchor="middle">完整版</text>
+  <text class="mono" x="90" y="84" text-anchor="middle">python:3.14</text>
+  <text class="ttl" x="90" y="112" text-anchor="middle">~1 GB</text>
+  <text class="sm" x="90" y="140" text-anchor="middle">Debian + 编译器</text>
+  <text class="sm" x="90" y="158" text-anchor="middle">+ 大量开发库</text>
+  <text class="sm" x="90" y="190" text-anchor="middle">适合：构建阶段</text>
+  <rect class="bx-a" x="170" y="36" width="140" height="190" rx="10"/>
+  <text class="ttl on-a" x="240" y="62" text-anchor="middle">slim</text>
+  <text class="mono" x="240" y="84" text-anchor="middle">3.14-slim</text>
+  <text class="ttl" x="240" y="112" text-anchor="middle">~120 MB</text>
+  <text class="sm" x="240" y="140" text-anchor="middle">精简的 Debian</text>
+  <text class="sm" x="240" y="158" text-anchor="middle">glibc，兼容性好</text>
+  <text class="sm on-g" x="240" y="190" text-anchor="middle">大多数情况的首选</text>
+  <rect class="bx-b" x="320" y="36" width="140" height="190" rx="10"/>
+  <text class="ttl on-b" x="390" y="62" text-anchor="middle">alpine</text>
+  <text class="mono" x="390" y="84" text-anchor="middle">3.14-alpine</text>
+  <text class="ttl" x="390" y="112" text-anchor="middle">~50 MB</text>
+  <text class="sm" x="390" y="140" text-anchor="middle">musl libc</text>
+  <text class="sm" x="390" y="158" text-anchor="middle">有 shell 和 apk</text>
+  <text class="sm" x="390" y="190" text-anchor="middle">注意 musl 兼容性</text>
+  <rect class="bx-p" x="470" y="36" width="140" height="190" rx="10"/>
+  <text class="ttl on-p" x="540" y="62" text-anchor="middle">distroless</text>
+  <text class="mono" x="540" y="84" text-anchor="middle" style="font-size:10.5px">gcr.io/distroless/*</text>
+  <text class="ttl" x="540" y="112" text-anchor="middle">几 MB 起</text>
+  <text class="sm" x="540" y="140" text-anchor="middle">只有运行时</text>
+  <text class="sm" x="540" y="158" text-anchor="middle">没有 shell 和包管理器</text>
+  <text class="sm" x="540" y="190" text-anchor="middle">适合：Go、Java</text>
+  <rect class="bx-g" x="620" y="36" width="120" height="190" rx="10"/>
+  <text class="ttl on-g" x="680" y="62" text-anchor="middle">scratch</text>
+  <text class="mono" x="680" y="84" text-anchor="middle">FROM scratch</text>
+  <text class="ttl" x="680" y="112" text-anchor="middle">0 MB</text>
+  <text class="sm" x="680" y="140" text-anchor="middle">什么都没有</text>
+  <text class="sm" x="680" y="158" text-anchor="middle">只放静态二进制</text>
+  <text class="sm" x="680" y="190" text-anchor="middle">适合：Go</text>
+  <path class="ln-a" d="M20 246 H736" marker-end="url(#ar-a)"/>
+  <text class="sm" x="380" y="268" text-anchor="middle">越往右：越小、攻击面越小、漏洞越少 —— 但调试越难，兼容性要求越高（调试可以用第 7 章的 docker debug）</text>
+</svg>
+<figcaption>图 21-2　基础镜像的几种变体</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; alpine 不总是最好的选择</div>
+  <p>
+    alpine 使用 <strong>musl libc</strong>，而绝大多数预编译的二进制（Python wheel、Node 原生模块、各种 SDK）是按 <strong>glibc</strong> 编译的。
+    在 alpine 上它们可能没有现成的包，只能从源码编译 —— 构建变慢、需要装编译器，偶尔还有细微的行为差异（DNS 解析、线程栈大小）。
+    经验法则：<strong>Go 这类静态二进制随便选；Python、带原生模块的 Node 项目优先 slim。</strong>
+    另外别忘了第 16 章的 <strong>Docker Hardened Images</strong>，它提供各语言的加固版基础镜像，可以直接替换。
+  </p>
+</div>
+
+<h2 id="node">Node.js</h2>
+
+<div class="code" data-lang="dockerfile" data-file="Dockerfile（Node.js）">
+<pre>
+# syntax=docker/dockerfile:1
+FROM node:24-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev                      # 只装生产依赖
+
+FROM node:24-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci   # 包括 TypeScript 等开发依赖
+COPY . .
+RUN npm run build                          # 例如 tsc 输出到 dist/
+
+FROM node:24-alpine AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=deps  --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --chown=node:node package.json ./
+USER node
+EXPOSE 3000
+CMD ["node", "dist/index.js"]
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="Node.js 三阶段构建">
+  <rect class="bx-p" x="20" y="20" width="220" height="80" rx="10"/>
+  <text class="ttl on-p" x="130" y="46" text-anchor="middle">deps</text>
+  <text class="sm" x="130" y="68" text-anchor="middle">npm ci --omit=dev</text>
+  <text class="sm" x="130" y="86" text-anchor="middle">→ 生产 node_modules</text>
+  <rect class="bx-a" x="20" y="116" width="220" height="80" rx="10"/>
+  <text class="ttl on-a" x="130" y="142" text-anchor="middle">build</text>
+  <text class="sm" x="130" y="164" text-anchor="middle">全部依赖 + 源码</text>
+  <text class="sm" x="130" y="182" text-anchor="middle">npm run build → dist/</text>
+  <path class="ln-p" d="M242 60 H440" marker-end="url(#ar-p)"/>
+  <path class="ln-a" d="M242 156 H440" marker-end="url(#ar-a)"/>
+  <text class="sm on-p" x="340" y="52" text-anchor="middle">只拿 node_modules</text>
+  <text class="sm on-a" x="340" y="148" text-anchor="middle">只拿 dist/</text>
+  <text class="sm" x="340" y="104" text-anchor="middle">两个阶段并行构建</text>
+  <rect class="bx-g" x="445" y="20" width="295" height="176" rx="12"/>
+  <text class="ttl on-g" x="592" y="48" text-anchor="middle">runtime</text>
+  <text class="sm" x="592" y="76" text-anchor="middle">node:24-alpine</text>
+  <text class="sm" x="592" y="96" text-anchor="middle">+ 生产依赖 + 编译后的 JS</text>
+  <text class="sm" x="592" y="124" text-anchor="middle">没有 TypeScript、没有源码</text>
+  <text class="sm" x="592" y="144" text-anchor="middle">没有 npm 缓存</text>
+  <text class="mono" x="592" y="176" text-anchor="middle">USER node · CMD ["node", …]</text>
+</svg>
+<figcaption>图 21-3　Node.js：生产依赖和编译产物分开准备，最后合并</figcaption>
+</figure>
+
+<h3>Node.js 的坑</h3>
+
+<div class="tw"><table>
+  <tr><th>坑</th><th>说明与对策</th></tr>
+  <tr><td><code>CMD ["npm", "start"]</code></td><td>npm 会多套一层进程，而且不能可靠地把 SIGTERM 转发给 node，<code>docker stop</code> 常常要等 10 秒被强杀。<strong>直接用 <code>node</code> 启动</strong>。</td></tr>
+  <tr><td>PID 1 不处理信号</td><td>Node 作为 PID 1 时，如果代码没监听 SIGTERM，信号会被忽略（第 7 章）。在代码里 <code>process.on('SIGTERM', …)</code> 优雅关闭 HTTP 服务器和数据库连接；或者运行时加 <code>--init</code>。</td></tr>
+  <tr><td>原生模块</td><td><code>bcrypt</code>、<code>sharp</code> 这类带 C++ 扩展的包在 alpine 上可能需要编译。遇到问题就换 <code>node:24-slim</code>。</td></tr>
+  <tr><td>本地 node_modules 混进镜像</td><td>.dockerignore 里一定要有 <code>node_modules</code>，否则 macOS 编译的模块会被复制进 Linux 镜像。</td></tr>
+  <tr><td>内存上限</td><td>新版本 Node 会参考容器的内存限制设置堆大小，但想要可预期的行为，可以显式指定：<code>ENV NODE_OPTIONS="--max-old-space-size=384"</code>（约为容器内存上限的 75%）。</td></tr>
+  <tr><td>pnpm / yarn</td><td>用 <code>corepack enable</code> 启用，锁文件换成 <code>pnpm-lock.yaml</code>，安装命令换成 <code>pnpm install --frozen-lockfile</code>，思路完全相同。</td></tr>
+</table></div>
+
+<div class="code" data-lang="js" data-file="src/index.ts（优雅关闭）">
+<pre>
+const server = app.listen(3000, '0.0.0.0')   // 监听 0.0.0.0，原因见第 17 章
+
+process.on('SIGTERM', () => {
+  console.log('收到 SIGTERM，正在关闭……')
+  server.close(async () => {
+    await db.end()                            // 关闭数据库连接池
+    process.exit(0)
+  })
+})
+</pre>
+</div>
+
+<h2 id="python">Python</h2>
+
+<p>
+  Python 这几年的依赖管理工具换了一代：<strong>uv</strong>（Astral 出品，用 Rust 编写）速度极快，并且原生支持锁文件 <code>uv.lock</code>，已经成为新项目的主流选择。
+  下面的模板用 uv 在构建阶段创建虚拟环境，再把整个虚拟环境复制到运行阶段：
+</p>
+
+<div class="code" data-lang="dockerfile" data-file="Dockerfile（Python + uv）">
+<pre>
+# syntax=docker/dockerfile:1
+FROM python:3.14-slim AS build
+COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /uvx /bin/
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_NO_DEV=1 \
+    UV_PYTHON_DOWNLOADS=0
+WORKDIR /app
+
+# 1. 只根据锁文件安装依赖（源码变化不会让这一层失效）
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-install-project
+
+# 2. 复制源码，安装项目本身
+COPY . .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked
+
+FROM python:3.14-slim AS runtime
+ENV PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:$PATH"
+RUN groupadd --system app &amp;&amp; useradd --system --gid app --no-create-home app
+WORKDIR /app
+COPY --from=build --chown=app:app /app /app
+USER app
+EXPOSE 8000
+CMD ["uvicorn", "myapp.main:app", "--host", "0.0.0.0", "--port", "8000"]
+</pre>
+</div>
+
+<div class="tw"><table>
+  <tr><th>设置</th><th>作用</th></tr>
+  <tr><td><code>COPY --from=ghcr.io/astral-sh/uv:0.12</code></td><td>直接从 uv 的官方镜像里复制可执行文件，不用 pip 安装 uv；固定到小版本</td></tr>
+  <tr><td><code>UV_COMPILE_BYTECODE=1</code></td><td>安装时预编译 <code>.pyc</code>，容器启动更快</td></tr>
+  <tr><td><code>UV_LINK_MODE=copy</code></td><td>缓存挂载和目标目录不在同一文件系统，用复制代替硬链接，避免警告</td></tr>
+  <tr><td><code>UV_NO_DEV=1</code></td><td>不安装开发依赖（pytest、ruff 等）</td></tr>
+  <tr><td><code>UV_PYTHON_DOWNLOADS=0</code></td><td>使用镜像自带的 Python，不让 uv 另外下载一个</td></tr>
+  <tr><td><code>PYTHONUNBUFFERED=1</code></td><td>输出不缓冲，<code>docker logs</code> 能实时看到日志</td></tr>
+  <tr><td><code>PATH=/app/.venv/bin:…</code></td><td>让 <code>uvicorn</code>、<code>python</code> 直接使用虚拟环境里的版本</td></tr>
+</table></div>
+
+<div class="box tip">
+  <div class="t">&#128161; 还在用 pip + requirements.txt？</div>
+  <p>思路一样，只是换成：</p>
+  <div class="code" data-lang="dockerfile"><pre>
+FROM python:3.14-slim AS build
+WORKDIR /app
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
+# 运行阶段：COPY --from=build /opt/venv /opt/venv，并设置同样的 PATH
+</pre></div>
+</div>
+
+<h3>Python 的坑</h3>
+
+<div class="tw"><table>
+  <tr><th>坑</th><th>说明与对策</th></tr>
+  <tr><td>用 alpine 导致构建极慢</td><td>numpy、pandas、cryptography 等在 alpine 上经常没有可用的 wheel，要现场编译几分钟甚至几十分钟。<strong>优先 slim</strong>。</td></tr>
+  <tr><td>需要编译的依赖</td><td>在 <strong>build 阶段</strong>装 <code>build-essential</code>、<code>libpq-dev</code> 等，运行阶段只装运行时库（如 <code>libpq5</code>）。编译器不进最终镜像。</td></tr>
+  <tr><td>虚拟环境路径变了就失效</td><td>虚拟环境里写死了绝对路径，所以构建阶段和运行阶段要用<strong>同一个路径</strong>（本例都是 <code>/app/.venv</code>）和同一个 Python 版本。</td></tr>
+  <tr><td>开发服务器上生产</td><td><code>flask run</code>、<code>manage.py runserver</code> 只用于开发。生产用 gunicorn、uvicorn、granian 等。</td></tr>
+  <tr><td>日志看不到</td><td>忘了 <code>PYTHONUNBUFFERED=1</code>，输出卡在缓冲区里，容器崩溃时最后几行日志就丢了。</td></tr>
+</table></div>
+
+<h2 id="go">Go</h2>
+
+<p>
+  Go 是最适合容器的语言之一：可以编译成<strong>不依赖任何系统库的静态二进制</strong>，最终镜像可以小到只有几 MB。
+  而且 Go 的交叉编译能力，让多架构构建完全不需要 QEMU 模拟：
+</p>
+
+<div class="code" data-lang="dockerfile" data-file="Dockerfile（Go）">
+<pre>
+# syntax=docker/dockerfile:1
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY . .
+ARG TARGETOS TARGETARCH
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+
+FROM gcr.io/distroless/static-debian13:nonroot
+COPY --from=build /out/server /server
+USER nonroot:nonroot
+EXPOSE 8080
+ENTRYPOINT ["/server"]
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="Go 在构建机原生架构上交叉编译多个目标架构">
+  <rect class="bx-b" x="20" y="70" width="250" height="130" rx="12"/>
+  <text class="ttl on-b" x="145" y="96" text-anchor="middle">build 阶段</text>
+  <text class="mono" x="145" y="120" text-anchor="middle" style="font-size:11px">--platform=$BUILDPLATFORM</text>
+  <text class="sm" x="145" y="144" text-anchor="middle">永远在构建机的原生架构上运行</text>
+  <text class="sm" x="145" y="164" text-anchor="middle">（比如 amd64 的 CI 机器）</text>
+  <text class="sm on-g" x="145" y="186" text-anchor="middle">不需要 QEMU，全速编译</text>
+  <path class="ln-a" d="M272 110 L386 70" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M272 160 L386 200" marker-end="url(#ar-a)"/>
+  <text class="mono" x="330" y="76" text-anchor="middle" style="font-size:10.5px">GOARCH=amd64</text>
+  <text class="mono" x="330" y="206" text-anchor="middle" style="font-size:10.5px">GOARCH=arm64</text>
+  <rect class="bx-a" x="390" y="36" width="160" height="70" rx="10"/>
+  <text class="sm on-a" x="470" y="64" text-anchor="middle">server（amd64）</text>
+  <text class="sm" x="470" y="84" text-anchor="middle">静态二进制</text>
+  <rect class="bx-a" x="390" y="166" width="160" height="70" rx="10"/>
+  <text class="sm on-a" x="470" y="194" text-anchor="middle">server（arm64）</text>
+  <text class="sm" x="470" y="214" text-anchor="middle">静态二进制</text>
+  <path class="ln-g" d="M552 70 H596" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M552 200 H596" marker-end="url(#ar-g)"/>
+  <rect class="bx-g" x="600" y="36" width="140" height="70" rx="10"/>
+  <text class="sm on-g" x="670" y="64" text-anchor="middle">distroless</text>
+  <text class="sm" x="670" y="84" text-anchor="middle">amd64 镜像</text>
+  <rect class="bx-g" x="600" y="166" width="140" height="70" rx="10"/>
+  <text class="sm on-g" x="670" y="194" text-anchor="middle">distroless</text>
+  <text class="sm" x="670" y="214" text-anchor="middle">arm64 镜像</text>
+  <text class="lbl" x="380" y="260" text-anchor="middle">docker buildx build --platform linux/amd64,linux/arm64 … 时，TARGETARCH 会自动设为每个目标架构</text>
+</svg>
+<figcaption>图 21-4　Go 交叉编译：在原生架构上编译，产出多个架构的二进制</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>设置</th><th>作用</th></tr>
+  <tr><td><code>--platform=$BUILDPLATFORM</code></td><td>构建阶段使用构建机自己的架构，而不是目标架构，避免 QEMU 模拟</td></tr>
+  <tr><td><code>ARG TARGETOS TARGETARCH</code></td><td>BuildKit 自动提供的参数，表示当前要产出的目标平台</td></tr>
+  <tr><td><code>CGO_ENABLED=0</code></td><td>不链接 C 库，生成纯静态二进制，才能在 distroless/static 或 scratch 里运行</td></tr>
+  <tr><td><code>-trimpath -ldflags="-s -w"</code></td><td>去掉本机路径和调试符号，二进制更小、构建更可重复</td></tr>
+  <tr><td>两个缓存挂载</td><td><code>/go/pkg/mod</code> 缓存下载的模块，<code>/root/.cache/go-build</code> 缓存编译结果</td></tr>
+  <tr><td><code>distroless/static:nonroot</code></td><td>只含 CA 证书、时区数据和一个非 root 用户，约 2 MB</td></tr>
+</table></div>
+
+<h3>Go 的坑</h3>
+
+<div class="tw"><table>
+  <tr><th>坑</th><th>说明与对策</th></tr>
+  <tr><td>用 scratch 后 HTTPS 请求失败</td><td>scratch 里没有 CA 证书，报 <code>x509: certificate signed by unknown authority</code>。用 distroless/static（自带证书），或从构建阶段复制 <code>/etc/ssl/certs/ca-certificates.crt</code>。</td></tr>
+  <tr><td>时区不对</td><td>scratch 里没有时区数据。用 distroless，或者编译时加 <code>-tags timetzdata</code> 把时区数据嵌进二进制。</td></tr>
+  <tr><td>用了 CGO 的库</td><td>比如某些 SQLite 驱动。要么换纯 Go 实现，要么保留 <code>CGO_ENABLED=1</code> 并改用 <code>distroless/base</code>（含 glibc）作为运行镜像，交叉编译也会变复杂。</td></tr>
+  <tr><td>没有 shell，健康检查怎么写</td><td>distroless 里没有 <code>wget</code>/<code>curl</code>。在程序里实现一个子命令，例如 <code>/server healthcheck</code> 去请求本地的 <code>/health</code>，然后 <code>HEALTHCHECK CMD ["/server", "healthcheck"]</code>。</td></tr>
+</table></div>
+
+<h2 id="java">Java（Spring Boot）</h2>
+
+<p>Java 镜像的关键在于三点：用 JDK 构建、用 JRE 运行；让 JVM 正确感知容器的内存限制；利用分层让依赖（通常几十 MB）不必每次都重新推送。</p>
+
+<div class="code" data-lang="dockerfile" data-file="Dockerfile（Java · Maven · Spring Boot）">
+<pre>
+# syntax=docker/dockerfile:1
+FROM eclipse-temurin:25-jdk AS build
+WORKDIR /src
+COPY mvnw pom.xml ./
+COPY .mvn .mvn
+RUN --mount=type=cache,target=/root/.m2 \
+    ./mvnw -B dependency:go-offline          # 先下载依赖，独立成层
+COPY src src
+RUN --mount=type=cache,target=/root/.m2 \
+    ./mvnw -B package -DskipTests            # 测试交给 CI 的 test 目标
+# 把 Spring Boot 的可执行 jar 按层拆开
+RUN java -Djarmode=tools -jar target/*.jar extract --layers --destination /extracted
+
+FROM eclipse-temurin:25-jre AS runtime
+RUN groupadd --system app &amp;&amp; useradd --system --gid app app
+WORKDIR /app
+COPY --from=build /extracted/dependencies/          ./
+COPY --from=build /extracted/spring-boot-loader/    ./
+COPY --from=build /extracted/snapshot-dependencies/ ./
+COPY --from=build /extracted/application/           ./
+USER app
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "application.jar"]
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="Spring Boot 分层 jar 按变化频率拆成多个镜像层">
+  <text class="ttl" x="190" y="22" text-anchor="middle">一个 fat jar = 一个层</text>
+  <rect class="bx-r" x="60" y="40" width="260" height="140" rx="10"/>
+  <text class="ttl on-r" x="190" y="100" text-anchor="middle">app.jar · 80 MB</text>
+  <text class="sm" x="190" y="124" text-anchor="middle">改一行代码</text>
+  <text class="sm" x="190" y="142" text-anchor="middle">→ 整个 80 MB 重新推送、拉取</text>
+
+  <text class="ttl" x="570" y="22" text-anchor="middle">分层之后</text>
+  <rect class="bx-g" x="440" y="40" width="260" height="30" rx="6"/><text class="sm on-g" x="570" y="60" text-anchor="middle">application · 200 KB（每次都变）</text>
+  <rect class="bx" x="440" y="76" width="260" height="30" rx="6"/><text class="sm" x="570" y="96" text-anchor="middle">snapshot-dependencies（偶尔变）</text>
+  <rect class="bx" x="440" y="112" width="260" height="30" rx="6"/><text class="sm" x="570" y="132" text-anchor="middle">spring-boot-loader（几乎不变）</text>
+  <rect class="bx-b" x="440" y="148" width="260" height="32" rx="6"/><text class="sm on-b" x="570" y="169" text-anchor="middle">dependencies · 79 MB（很少变）</text>
+  <path class="ln-a" d="M330 110 H430" marker-end="url(#ar-a)"/>
+  <text class="lbl" x="380" y="214" text-anchor="middle">越常变的放越上层：改代码时只有最上面 200 KB 的层需要重新推送和拉取</text>
+  <text class="sm" x="380" y="234" text-anchor="middle">jarmode=tools 的 extract 命令适用于 Spring Boot 3.3 及以上版本</text>
+</svg>
+<figcaption>图 21-5　Spring Boot 分层：把依赖和代码拆开</figcaption>
+</figure>
+
+<h3>Java 的坑</h3>
+
+<div class="tw"><table>
+  <tr><th>坑</th><th>说明与对策</th></tr>
+  <tr><td>JVM 内存设置</td><td>现代 JVM 能感知容器限制，但默认最大堆只有容器内存的 <strong>25%</strong>，很浪费。用 <code>-XX:MaxRAMPercentage=75</code> 按比例设置，而<strong>不要</strong>写死 <code>-Xmx</code> —— 否则改了容器内存限制还得记着改它。剩下的内存留给元空间、线程栈、直接内存等。</td></tr>
+  <tr><td>OOM 后半死不活</td><td><code>-XX:+ExitOnOutOfMemoryError</code> 让 JVM 在内存溢出时直接退出，交给重启策略拉起，而不是带病运行。</td></tr>
+  <tr><td>用 JDK 运行</td><td>JDK 比 JRE 大好几百 MB，还带着编译器等不必要的工具。运行阶段用 <code>-jre</code>；更进一步可以用 <code>jlink</code> 裁剪出只含所需模块的运行时，或用 <code>gcr.io/distroless/java25-debian13</code>。</td></tr>
+  <tr><td>启动慢</td><td>可以考虑 CDS / AOT 缓存（新版本 JDK 持续在改进），或者用 GraalVM Native Image 编译成原生二进制（启动毫秒级，但构建慢、有兼容性限制）。</td></tr>
+  <tr><td>Gradle 项目</td><td>思路相同：先复制 <code>build.gradle</code>、<code>settings.gradle</code>、<code>gradle/</code> 下载依赖，缓存挂载 <code>/root/.gradle</code>，再复制源码执行 <code>./gradlew bootJar</code>。</td></tr>
+</table></div>
+
+<h2 id="frontend">附：前端静态站点</h2>
+
+<p>React、Vue、Vite 这类前端项目，构建结果只是一堆静态文件，运行时根本不需要 Node：</p>
+
+<div class="code" data-lang="dockerfile" data-file="Dockerfile（前端静态站点）">
+<pre>
+# syntax=docker/dockerfile:1
+FROM node:24-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY . .
+RUN npm run build                          # 输出到 dist/
+
+FROM nginx:alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 80
+</pre>
+</div>
+
+<p>单页应用还需要让 nginx 把找不到的路径都回退到 <code>index.html</code>（<code>try_files $uri /index.html;</code>）。也可以直接用第 20 章的 Caddy 托管静态文件。</p>
+
+<h2 id="compare">四种语言对比</h2>
+
+<div class="tw"><table>
+  <tr><th></th><th>Node.js</th><th>Python</th><th>Go</th><th>Java</th></tr>
+  <tr><td>构建镜像</td><td><code>node:24-alpine</code></td><td><code>python:3.14-slim</code> + uv</td><td><code>golang:1.27-alpine</code></td><td><code>eclipse-temurin:25-jdk</code></td></tr>
+  <tr><td>运行镜像</td><td><code>node:24-alpine</code></td><td><code>python:3.14-slim</code></td><td><code>distroless/static</code></td><td><code>eclipse-temurin:25-jre</code></td></tr>
+  <tr><td>最终镜像大致大小</td><td>150–250 MB</td><td>150–300 MB</td><td>10–30 MB</td><td>250–350 MB</td></tr>
+  <tr><td>依赖缓存挂载</td><td><code>/root/.npm</code></td><td><code>/root/.cache/uv</code></td><td><code>/go/pkg/mod</code> + <code>/root/.cache/go-build</code></td><td><code>/root/.m2</code></td></tr>
+  <tr><td>最大的坑</td><td>npm start 吞信号</td><td>alpine 上编译 wheel</td><td>CGO 与 CA 证书</td><td>JVM 堆默认只用 25%</td></tr>
+  <tr><td>.dockerignore 重点</td><td><code>node_modules</code>、<code>dist</code></td><td><code>.venv</code>、<code>__pycache__</code></td><td>编译产物</td><td><code>target</code>、<code>build</code>、<code>.gradle</code></td></tr>
+</table></div>
+
+<div class="box tip">
+  <div class="t">&#128161; 别忘了 docker init</div>
+  <p>第 8 章的 <code>docker init</code> 支持 Node、Python、Go、Java、Rust、PHP、ASP.NET 等，会生成一个遵循最佳实践的起点。可以先用它生成，再对照本章的模板和清单做调整。</p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>所有语言的生产 Dockerfile 都遵循同一个骨架：固定基础镜像 → 依赖层 → 源码与构建 → 精简的运行阶段。</li>
+  <li>基础镜像按需选择：slim 兼容性最好，alpine 小但要注意 musl，distroless / scratch 最小最安全，适合静态二进制。</li>
+  <li>Node.js：用 <code>node</code> 直接启动并处理 SIGTERM，生产依赖和编译产物分阶段准备。</li>
+  <li>Python：用 uv 和锁文件，虚拟环境整体复制到运行阶段，优先 slim，别忘了 <code>PYTHONUNBUFFERED</code>。</li>
+  <li>Go：<code>CGO_ENABLED=0</code> 静态编译，利用 <code>$BUILDPLATFORM</code> 交叉编译避开 QEMU，运行在 distroless 上。</li>
+  <li>Java：JDK 构建、JRE 运行，<code>MaxRAMPercentage</code> 设置堆大小，Spring Boot 分层让依赖层可以复用。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>挑一种你熟悉的语言，把自己的一个项目按本章模板容器化，然后对照“通用检查清单”逐项检查。</li>
+    <li>用同一个 Python 项目分别构建 <code>3.14</code>、<code>3.14-slim</code>、<code>3.14-alpine</code> 三个版本，比较构建时间和镜像大小。</li>
+    <li>用本章的 Go 模板执行 <code>docker buildx build --platform linux/amd64,linux/arm64 .</code>，观察编译步骤是否需要 QEMU（看日志里的平台标记），并与第 8 章不加 <code>$BUILDPLATFORM</code> 的写法对比耗时。</li>
+    <li>给 Java 容器设置 <code>--memory 1g</code>，进入容器执行 <code>java -XX:+PrintFlagsFinal -version | grep MaxHeapSize</code>，对比设置 <code>MaxRAMPercentage=75</code> 前后的值。</li>
+    <li>把 Node 模板的 <code>CMD</code> 改成 <code>["npm", "start"]</code>，用 <code>time docker stop</code> 对比停止耗时和退出码。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>
