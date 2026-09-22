@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>附录 · 下一步与术语表 — Docker 从零到精通</title>
+<title>第 23 章 · 从 Compose 走向 Kubernetes — Docker 从零到精通</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body data-chapter="23">
@@ -11,229 +11,791 @@
 <aside id="sidebar"></aside>
 <main>
 
-<span class="chapter-eyebrow">附录</span>
-<h1>下一步与术语表</h1>
+<span class="chapter-eyebrow">第 23 章</span>
+<h1>从 Compose 走向 Kubernetes</h1>
 <p class="lede">
-  恭喜你读完了全部 22 章！你已经走在掌握 Docker 和容器的路上，还顺便学会了在本地运行大模型。
-  这一页把全书的命令整理成速查表，把关键术语整理成词汇表，并给出接下来的学习路线。
+  你已经会用 Compose 管理一台机器上的应用，用 Swarm 管理一个小集群。<strong>Kubernetes</strong> 是容器编排的行业标准，
+  它的核心思想你其实已经学过了：期望状态、调和、服务、滚动更新（第 12 章）。本章做一件具体的事：
+  <strong>把第 9、12 章的计数器应用从 Compose 翻译成 Kubernetes</strong>，在本地集群上跑起来，并讲清楚每个概念对应什么、有哪些坑。
 </p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>判断什么时候需要 Kubernetes，什么时候 Compose 就够了</li>
+    <li>建立 Compose 与 Kubernetes 的概念对照表</li>
+    <li>理解 Kubernetes 的架构，以及它和 Docker 共用的那部分（containerd、runc、OCI 镜像）</li>
+    <li>用 kind 创建本地集群，编写并部署 Deployment、Service、PVC</li>
+    <li>体验自我修复、扩缩容、滚动更新与回滚</li>
+    <li>了解对外暴露服务的方式，以及 Ingress NGINX 退役后的 Gateway API</li>
+    <li>知道 Kompose 自动转换能帮到哪里、又会在哪里坑你</li>
+  </ul>
+</div>
 
 <div id="chapter-toc"></div>
 
-<h2 id="roadmap">接下来学什么</h2>
+<div class="box note">
+  <div class="t">&#9432; 关于本章示例</div>
+  <p>
+    本章基于 2026 年 9 月的版本：Kubernetes 1.37、kind v0.33、Gateway API v1.6。文中的 Kubernetes 清单都已用 kubeconform 按
+    Kubernetes 1.37 的 API 规范严格校验通过；Kompose 的输出是实际运行 Kompose 1.38 得到的。但它们没有在真实集群上运行过 ——
+    请在自己的 kind 集群上动手验证，这也是本章的练习。
+  </p>
+</div>
+
+<h2 id="when">什么时候需要 Kubernetes</h2>
+
+<p>先说一句可能出乎意料的话：<strong>很多项目并不需要 Kubernetes。</strong>它强大，但也复杂，需要专门的知识和运维投入。</p>
 
 <figure>
-<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="学完 Docker 之后的学习路线图">
-  <rect class="bx-a" x="20" y="120" width="150" height="70" rx="12"/>
-  <text class="ttl on-a" x="95" y="148" text-anchor="middle">你在这里</text>
-  <text class="sm" x="95" y="170" text-anchor="middle">Docker 基础 ✓</text>
-
-  <path class="ln-a" d="M172 140 L250 60"  marker-end="url(#ar-a)"/>
-  <path class="ln-a" d="M172 155 L250 155" marker-end="url(#ar-a)"/>
-  <path class="ln-a" d="M172 170 L250 250" marker-end="url(#ar-a)"/>
-
-  <rect class="bx-b" x="255" y="20" width="220" height="80" rx="12"/>
-  <text class="ttl on-b" x="365" y="46" text-anchor="middle">编排：Kubernetes</text>
-  <text class="sm" x="365" y="68" text-anchor="middle">Pod · Deployment · Service</text>
-  <text class="sm" x="365" y="86" text-anchor="middle">本地可用 kind / minikube</text>
-
-  <rect class="bx-g" x="255" y="115" width="220" height="80" rx="12"/>
-  <text class="ttl on-g" x="365" y="141" text-anchor="middle">交付：CI/CD</text>
-  <text class="sm" x="365" y="163" text-anchor="middle">第 19 章已入门，继续深入</text>
-  <text class="sm" x="365" y="181" text-anchor="middle">部署策略与发布流程</text>
-
-  <rect class="bx-p" x="255" y="210" width="220" height="80" rx="12"/>
-  <text class="ttl on-p" x="365" y="236" text-anchor="middle">AI 与智能体</text>
-  <text class="sm" x="365" y="258" text-anchor="middle">Model Runner · MCP Toolkit</text>
-  <text class="sm" x="365" y="276" text-anchor="middle">Docker Sandboxes</text>
-
-  <path class="ln" d="M477 60 H530" marker-end="url(#ar)"/>
-  <path class="ln" d="M477 155 H530" marker-end="url(#ar)"/>
-  <path class="ln" d="M477 250 H530" marker-end="url(#ar)"/>
-  <rect class="bx-d" x="535" y="30" width="205" height="60" rx="10"/>
-  <text class="sm" x="637" y="56" text-anchor="middle">Helm · GitOps（Argo CD）</text>
-  <text class="sm" x="637" y="74" text-anchor="middle">服务网格 · 可观测性</text>
-  <rect class="bx-d" x="535" y="125" width="205" height="60" rx="10"/>
-  <text class="sm" x="637" y="151" text-anchor="middle">供应链安全：SBOM、SLSA</text>
-  <text class="sm" x="637" y="169" text-anchor="middle">Cosign 策略验证</text>
-  <rect class="bx-d" x="535" y="220" width="205" height="60" rx="10"/>
-  <text class="sm" x="637" y="246" text-anchor="middle">RAG · 智能体应用</text>
-  <text class="sm" x="637" y="264" text-anchor="middle">用 Compose 编排 AI 应用</text>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="Compose、Swarm、Kubernetes 与托管平台的适用场景">
+  <rect class="bx-g" x="20" y="30" width="170" height="180" rx="12"/>
+  <text class="ttl on-g" x="105" y="56" text-anchor="middle">Compose</text>
+  <text class="sm" x="105" y="80" text-anchor="middle">单台机器</text>
+  <text class="sm" x="105" y="104" text-anchor="middle">开发环境、小项目</text>
+  <text class="sm" x="105" y="122" text-anchor="middle">内部工具</text>
+  <text class="sm" x="105" y="160" text-anchor="middle">学习成本：低</text>
+  <text class="sm" x="105" y="180" text-anchor="middle">第 9、18、20 章</text>
+  <rect class="bx-b" x="205" y="30" width="170" height="180" rx="12"/>
+  <text class="ttl on-b" x="290" y="56" text-anchor="middle">Swarm</text>
+  <text class="sm" x="290" y="80" text-anchor="middle">几台机器的小集群</text>
+  <text class="sm" x="290" y="104" text-anchor="middle">需要高可用</text>
+  <text class="sm" x="290" y="122" text-anchor="middle">但团队很小</text>
+  <text class="sm" x="290" y="160" text-anchor="middle">学习成本：低</text>
+  <text class="sm" x="290" y="180" text-anchor="middle">第 12 章</text>
+  <rect class="bx-a" x="390" y="30" width="170" height="180" rx="12"/>
+  <text class="ttl on-a" x="475" y="56" text-anchor="middle">Kubernetes</text>
+  <text class="sm" x="475" y="80" text-anchor="middle">多服务、多团队</text>
+  <text class="sm" x="475" y="104" text-anchor="middle">自动扩缩容</text>
+  <text class="sm" x="475" y="122" text-anchor="middle">庞大的生态</text>
+  <text class="sm" x="475" y="160" text-anchor="middle">学习成本：高</text>
+  <text class="sm" x="475" y="180" text-anchor="middle">本章</text>
+  <rect class="bx-p" x="575" y="30" width="165" height="180" rx="12"/>
+  <text class="ttl on-p" x="657" y="56" text-anchor="middle">托管平台</text>
+  <text class="sm" x="657" y="80" text-anchor="middle">Cloud Run、ECS、</text>
+  <text class="sm" x="657" y="98" text-anchor="middle">Container Apps…</text>
+  <text class="sm" x="657" y="122" text-anchor="middle">不想管集群</text>
+  <text class="sm" x="657" y="160" text-anchor="middle">学习成本：低</text>
+  <text class="sm" x="657" y="180" text-anchor="middle">按量付费</text>
+  <path class="ln-a" d="M20 234 H736" marker-end="url(#ar-a)"/>
+  <text class="sm" x="380" y="258" text-anchor="middle">越往右能力越强，复杂度也越高（托管平台把复杂度交给了云厂商）—— 选够用的那个</text>
 </svg>
-<figcaption>图 A-1　三条可选的进阶路线</figcaption>
+<figcaption>图 23-1　按需求选择编排方式</figcaption>
 </figure>
 
-<h3>Kubernetes</h3>
-<p>
-  理解了 Docker，Kubernetes 就是最自然的下一步。它的思想和 Swarm 很像（期望状态、调和、服务、滚动更新），但范围更大、社区更活跃。
-  你用 Docker 构建的镜像可以直接在 Kubernetes 上运行。Docker Desktop 自带一键启用的 Kubernetes（新版本默认用 kind 创建集群），非常适合入门。
-  原书作者还写了《Quick Start Kubernetes》和《The Kubernetes Book》，可以作为延伸阅读。
-</p>
+<p>当你遇到下面这些需求时，Kubernetes 就值得认真考虑了：</p>
+<ul>
+  <li>几十个服务、多个团队各自发布，需要统一的部署方式和权限隔离；</li>
+  <li>流量波动大，需要按 CPU、请求量自动扩缩容；</li>
+  <li>需要成熟的生态：服务网格、GitOps、策略引擎、各种 Operator；</li>
+  <li>公司已经有 Kubernetes 平台团队，或者使用云厂商的托管 Kubernetes（EKS、GKE、AKS 等）。</li>
+</ul>
 
-<h3>AI 编程助手与 Docker Sandboxes</h3>
-<p>
-  2026 年，Docker 推出了 <strong>Docker Sandboxes</strong>（<code>docker sbx</code>）：为 Claude Code、Codex、Gemini CLI 等 AI 编程助手提供基于 <strong>microVM</strong> 的隔离环境。
-  每个会话运行在独立的轻量虚拟机里，只挂载你的项目目录，助手可以放心地安装软件、甚至运行自己的容器，而不会影响你的主机。
-  这正是第 1 章“虚拟机 vs 容器”取舍的新应用：需要更强隔离时，用 microVM；需要轻量高效时，用容器。
-</p>
+<h2 id="mapping">概念对照：Compose → Kubernetes</h2>
 
-<h3>参与社区</h3>
-<p>
-  云原生社区里有很多乐于助人的人。可以加入线上的 Docker 群组和讨论，或者搜索本地的 Docker / 云原生 Meetup。
-  <a href="https://docs.docker.com">Docker 官方文档</a>是最权威、更新最及时的参考资料，遇到问题先查它。
-</p>
+<p>好消息是，你在 Compose 和 Swarm 里学到的几乎每个概念，在 Kubernetes 里都有对应物。</p>
 
-<h2 id="cheatsheet">命令速查总表</h2>
+<figure>
+<svg class="dgm" viewBox="0 0 760 420" role="img" aria-label="Compose 概念与 Kubernetes 对象的对应关系">
+  <text class="ttl on-g" x="130" y="22" text-anchor="middle">Compose / Swarm</text>
+  <text class="ttl on-a" x="600" y="22" text-anchor="middle">Kubernetes</text>
+  <g>
+    <rect class="bx-g" x="20" y="36" width="220" height="34" rx="6"/><text class="sm" x="130" y="58" text-anchor="middle">项目（project）</text>
+    <rect class="bx-a" x="470" y="36" width="270" height="34" rx="6"/><text class="sm" x="605" y="58" text-anchor="middle">Namespace（命名空间）</text>
+    <path class="ln" d="M242 53 H466" marker-end="url(#ar)"/>
+    <rect class="bx-g" x="20" y="78" width="220" height="34" rx="6"/><text class="sm" x="130" y="100" text-anchor="middle">一个服务的容器定义</text>
+    <rect class="bx-a" x="470" y="78" width="270" height="34" rx="6"/><text class="sm" x="605" y="100" text-anchor="middle">Pod（一个或几个紧密协作的容器）</text>
+    <path class="ln" d="M242 95 H466" marker-end="url(#ar)"/>
+    <rect class="bx-g" x="20" y="120" width="220" height="34" rx="6"/><text class="sm" x="130" y="142" text-anchor="middle">deploy.replicas / 滚动更新</text>
+    <rect class="bx-a" x="470" y="120" width="270" height="34" rx="6"/><text class="sm" x="605" y="142" text-anchor="middle">Deployment（管理副本和更新）</text>
+    <path class="ln" d="M242 137 H466" marker-end="url(#ar)"/>
+    <rect class="bx-g" x="20" y="162" width="220" height="34" rx="6"/><text class="sm" x="130" y="184" text-anchor="middle">服务名 DNS（redis:6379）</text>
+    <rect class="bx-a" x="470" y="162" width="270" height="34" rx="6"/><text class="sm" x="605" y="184" text-anchor="middle">Service（稳定的名字 + 负载均衡）</text>
+    <path class="ln" d="M242 179 H466" marker-end="url(#ar)"/>
+    <rect class="bx-g" x="20" y="204" width="220" height="34" rx="6"/><text class="sm" x="130" y="226" text-anchor="middle">ports 发布到主机</text>
+    <rect class="bx-a" x="470" y="204" width="270" height="34" rx="6"/><text class="sm" x="605" y="226" text-anchor="middle">Service 类型 / Gateway + HTTPRoute</text>
+    <path class="ln" d="M242 221 H466" marker-end="url(#ar)"/>
+    <rect class="bx-g" x="20" y="246" width="220" height="34" rx="6"/><text class="sm" x="130" y="268" text-anchor="middle">volumes（命名卷）</text>
+    <rect class="bx-a" x="470" y="246" width="270" height="34" rx="6"/><text class="sm" x="605" y="268" text-anchor="middle">PersistentVolumeClaim（PVC）</text>
+    <path class="ln" d="M242 263 H466" marker-end="url(#ar)"/>
+    <rect class="bx-g" x="20" y="288" width="220" height="34" rx="6"/><text class="sm" x="130" y="310" text-anchor="middle">environment / .env</text>
+    <rect class="bx-a" x="470" y="288" width="270" height="34" rx="6"/><text class="sm" x="605" y="310" text-anchor="middle">ConfigMap</text>
+    <path class="ln" d="M242 305 H466" marker-end="url(#ar)"/>
+    <rect class="bx-g" x="20" y="330" width="220" height="34" rx="6"/><text class="sm" x="130" y="352" text-anchor="middle">secrets</text>
+    <rect class="bx-a" x="470" y="330" width="270" height="34" rx="6"/><text class="sm" x="605" y="352" text-anchor="middle">Secret</text>
+    <path class="ln" d="M242 347 H466" marker-end="url(#ar)"/>
+    <rect class="bx-g" x="20" y="372" width="220" height="34" rx="6"/><text class="sm" x="130" y="394" text-anchor="middle">healthcheck</text>
+    <rect class="bx-a" x="470" y="372" width="270" height="34" rx="6"/><text class="sm" x="605" y="394" text-anchor="middle">readinessProbe / livenessProbe</text>
+    <path class="ln" d="M242 389 H466" marker-end="url(#ar)"/>
+  </g>
+</svg>
+<figcaption>图 23-2　Compose 概念与 Kubernetes 对象的对照</figcaption>
+</figure>
 
-<h3>镜像</h3>
-<div class="tw"><table class="cheat">
-  <tr><th>命令</th><th>作用</th><th>章节</th></tr>
-  <tr><td><code>docker pull 镜像[:标签|@摘要]</code></td><td>拉取镜像</td><td>6</td></tr>
-  <tr><td><code>docker images</code> / <code>docker image ls</code></td><td>列出本地镜像</td><td>6</td></tr>
-  <tr><td><code>docker inspect 镜像</code> / <code>docker history 镜像</code></td><td>查看元数据 / 构建历史</td><td>6</td></tr>
-  <tr><td><code>docker buildx imagetools inspect 镜像</code></td><td>查看仓库中的摘要与多架构清单</td><td>6</td></tr>
-  <tr><td><code>docker build -t 名:标签 .</code></td><td>构建镜像</td><td>8</td></tr>
-  <tr><td><code>docker tag</code> / <code>docker push</code></td><td>打标签 / 推送</td><td>8</td></tr>
-  <tr><td><code>docker rmi</code> / <code>docker image prune [-a]</code></td><td>删除镜像 / 清理</td><td>6</td></tr>
-  <tr><td><code>docker scout quickview / cves</code></td><td>漏洞扫描</td><td>6、16</td></tr>
-</table></div>
-
-<h3>容器</h3>
-<div class="tw"><table class="cheat">
-  <tr><th>命令</th><th>作用</th><th>章节</th></tr>
-  <tr><td><code>docker run -d --name n -p 主:容 镜像</code></td><td>启动容器</td><td>4、7</td></tr>
-  <tr><td><code>docker ps [-a]</code></td><td>列出容器</td><td>4、7</td></tr>
-  <tr><td><code>docker exec -it 容器 sh</code></td><td>进入容器</td><td>7</td></tr>
-  <tr><td><code>docker logs -f 容器</code></td><td>查看日志</td><td>7</td></tr>
-  <tr><td><code>docker stop</code> / <code>start</code> / <code>restart</code></td><td>生命周期管理</td><td>7</td></tr>
-  <tr><td><code>docker rm [-f] 容器</code> / <code>docker container prune</code></td><td>删除容器</td><td>7</td></tr>
-  <tr><td><code>docker inspect 容器</code> / <code>docker stats</code></td><td>详细信息 / 资源占用</td><td>7</td></tr>
-  <tr><td><code>docker debug 容器|镜像</code></td><td>调试精简容器</td><td>7</td></tr>
-</table></div>
-
-<h3>Compose、网络、卷</h3>
-<div class="tw"><table class="cheat">
-  <tr><th>命令</th><th>作用</th><th>章节</th></tr>
-  <tr><td><code>docker compose up -d</code> / <code>down [-v]</code></td><td>部署 / 删除应用</td><td>9</td></tr>
-  <tr><td><code>docker compose ps / logs / watch / config</code></td><td>查看状态、日志，热更新，查看最终配置</td><td>9</td></tr>
-  <tr><td><code>docker network create / ls / inspect / rm</code></td><td>管理网络</td><td>13、14</td></tr>
-  <tr><td><code>docker volume create / ls / inspect / rm / prune</code></td><td>管理卷</td><td>15</td></tr>
-</table></div>
-
-<h3>Swarm、AI 与系统</h3>
-<div class="tw"><table class="cheat">
-  <tr><th>命令</th><th>作用</th><th>章节</th></tr>
-  <tr><td><code>docker swarm init / join / leave</code></td><td>管理 swarm</td><td>12</td></tr>
-  <tr><td><code>docker stack deploy -c 文件 名称</code></td><td>部署 Swarm 应用</td><td>12</td></tr>
-  <tr><td><code>docker secret create / ls / rm</code></td><td>管理机密</td><td>16</td></tr>
-  <tr><td><code>docker model pull / run / ls / rm</code></td><td>管理本地大模型</td><td>10</td></tr>
-  <tr><td><code>docker version</code> / <code>docker info</code></td><td>版本 / 引擎信息</td><td>3</td></tr>
-  <tr><td><code>docker system df</code> / <code>docker system prune</code></td><td>磁盘占用 / 一键清理未使用的资源</td><td>6、17</td></tr>
-  <tr><td><code>docker events</code></td><td>实时查看引擎事件，排查反复重启、OOM</td><td>17</td></tr>
-</table></div>
-
-<h2 id="glossary">术语表</h2>
-
-<p>这里收录了全书最常用的 Docker 与容器术语（基于原书术语表翻译整理，并补充了 2026 年的新概念）。</p>
+<p>还有几处<strong>不是一一对应</strong>的地方，迁移时最容易出错：</p>
 
 <div class="tw"><table>
-  <tr><th>术语</th><th>解释</th></tr>
-  <tr><td>AI 加速硬件</td><td>GPU、NPU、TPU 等能加速 AI 模型执行（推理）的硬件</td></tr>
-  <tr><td>API</td><td>应用编程接口。Docker 的所有资源都定义在 Docker API 中，它是 RESTful 的，由 Docker 守护进程提供</td></tr>
-  <tr><td>基础镜像 Base image</td><td>所有镜像的第一层，由 Dockerfile 的 <code>FROM</code> 指令创建，通常包含应用所需的最小操作系统结构</td></tr>
-  <tr><td>Bake</td><td>Docker 的高层构建编排工具（<code>docker buildx bake</code>），用一个文件声明多个构建目标并行构建；Compose v5 的构建也委托给它</td></tr>
-  <tr><td>构建 Build</td><td>按 Dockerfile 中的指令逐步创建新镜像的过程</td></tr>
-  <tr><td>Build Cloud</td><td>在 Docker 云端基础设施上执行快速构建的订阅服务，团队可共享构建缓存</td></tr>
-  <tr><td>BuildKit</td><td>Docker 的构建引擎，实现高级缓存、多阶段构建、多架构构建等功能</td></tr>
-  <tr><td>Buildx</td><td>Docker 的构建客户端（CLI 插件），支持 BuildKit 全部新特性；自 Engine 23.0 / Desktop 4.19 起为默认</td></tr>
-  <tr><td>Capability</td><td>Linux 内核把 root 权限拆分成的细粒度权限单元，Docker 用它实现最小权限</td></tr>
-  <tr><td>cgroups 控制组</td><td>Linux 内核功能，Docker 用它限制容器使用的 CPU、内存、磁盘、网络资源</td></tr>
-  <tr><td>云原生 Cloud native</td><td>一种设计、构建和运行现代应用的方式。作者认为能自我修复、按需伸缩、滚动更新、版本回滚的应用就是云原生应用</td></tr>
-  <tr><td>集群存储 Cluster store</td><td>Docker Swarm 保存集群和应用状态的分布式数据库，基于 etcd，自动加密并复制到所有管理节点</td></tr>
-  <tr><td>CNM 容器网络模型</td><td>Docker 网络的设计规范，定义沙箱、端点、网络三个构件；libnetwork 是其实现</td></tr>
-  <tr><td>Compose</td><td>定义、部署和管理多容器应用的开放规范；Docker 实现了它并提供 <code>docker compose</code> 命令</td></tr>
-  <tr><td>容器 Container</td><td>一组被组织成看起来像普通操作系统的内核命名空间。每个容器运行一个应用，比虚拟机更小、更快、更便携</td></tr>
-  <tr><td>容器化 Containerize</td><td>把应用及其所有依赖打包成容器镜像的过程</td></tr>
-  <tr><td>容器运行时</td><td>每个节点上负责拉取镜像、启停容器等底层操作的软件。Docker 用两层运行时：高层的 containerd 管理生命周期，低层的 runc 与内核打交道</td></tr>
-  <tr><td>containerd</td><td>行业标准的容器运行时，被 Docker 和大多数 Kubernetes 集群使用，由 Docker 公司捐赠给 CNCF。读作 “container dee”</td></tr>
-  <tr><td>containerd 镜像存储</td><td>由 containerd 的 snapshotter 管理镜像的存储方式，Docker Engine 29 起为全新安装的默认值，原生支持多平台镜像和证明</td></tr>
-  <tr><td>期望状态 Desired state</td><td>集群和应用“应该是什么样子”，比如某服务应有 5 个监听 8080 端口的副本。调和的依据</td></tr>
-  <tr><td>摘要 Digest</td><td>根据镜像内容计算出的加密哈希，不可变，可以精确指定一个镜像</td></tr>
-  <tr><td>Docker</td><td>让容器化应用变得简单的平台：构建镜像、运行和管理独立容器及多容器应用</td></tr>
-  <tr><td>Docker Content Trust（DCT）</td><td>基于 Notary v1 的旧镜像签名机制，已退役：Engine 29 从 CLI 中移除，Notary 服务于 2026 年 12 月 8 日关闭。替代品是 Cosign / Notation</td></tr>
-  <tr><td>Docker Debug</td><td>CLI 插件，为不带调试工具的精简镜像和容器提供带工具箱的调试 shell</td></tr>
-  <tr><td>Docker Desktop</td><td>Linux、Mac、Windows 上的桌面应用，带图形界面和镜像管理、Model Runner 等高级功能</td></tr>
-  <tr><td>Docker Hardened Images（DHI）</td><td>Docker 维护的精简、加固、持续打补丁的基础镜像，2025 年 12 月起免费</td></tr>
-  <tr><td>Docker Hub</td><td>高性能、符合 OCI 标准的公共镜像仓库</td></tr>
-  <tr><td>Docker, Inc.</td><td>Docker 平台背后的美国科技公司</td></tr>
-  <tr><td>docker init</td><td>CLI 插件，分析项目并生成高质量的 Dockerfile、.dockerignore 和 Compose 文件</td></tr>
-  <tr><td>Docker Model Runner（DMR）</td><td>Docker 运行本地 AI 模型的原生工具，在容器之外直接使用宿主机硬件，提供 OpenAI 等兼容端点</td></tr>
-  <tr><td>Docker Sandboxes</td><td>基于 microVM 为 AI 编程助手提供隔离开发环境的产品（<code>docker sbx</code>）</td></tr>
-  <tr><td>Docker Scout</td><td>Docker 的漏洞扫描与供应链分析服务，集成在 CLI、Docker Hub 等处</td></tr>
-  <tr><td>Dockerfile</td><td>告诉 Docker 如何把应用构建成镜像的纯文本指令文件</td></tr>
-  <tr><td>etcd</td><td>Docker Swarm 使用的开源分布式数据库</td></tr>
-  <tr><td>GGUF</td><td>存储 LLM 权重和元数据的二进制文件格式</td></tr>
-  <tr><td>镜像 Image</td><td>包含应用代码、所有依赖和启动元数据的只读包，也叫 OCI 镜像、容器镜像、Docker 镜像</td></tr>
-  <tr><td>Ingress 网络</td><td>所有 Swarm 集群上都有的隐藏网络，用于向外部客户端发布服务（路由网格）</td></tr>
-  <tr><td>内核命名空间 Namespace</td><td>Linux 内核功能，Docker 用它把容器与宿主机进程及其他容器隔离开</td></tr>
-  <tr><td>层 Layer</td><td>镜像由层堆叠而成，每层包含对下层的修改；上层文件会遮盖下层同名文件</td></tr>
-  <tr><td>libcontainer / libnetwork</td><td>Docker 用来创建容器（通过 runc）/ 创建和管理容器网络的 Go 库</td></tr>
-  <tr><td>llama.cpp / vLLM</td><td>开源的 LLM 推理引擎。前者轻量、能在消费级 CPU 上运行，后者面向 GPU 上的高吞吐生产场景；都是 DMR 的可选后端</td></tr>
-  <tr><td>大语言模型 LLM</td><td>能参与人类对话、生成类人回答的 AI 模型</td></tr>
-  <tr><td>Manifest（OCI 清单）</td><td>描述镜像、模型等 OCI 制品的配置和层的 JSON 文档</td></tr>
-  <tr><td>Manifest list / Image index</td><td>一个标签下支持哪些架构的列表，是多架构镜像的基础</td></tr>
-  <tr><td>微服务 Microservices</td><td>现代应用的设计模式：每个功能作为独立的小应用（容器）开发，通过 API 协同工作</td></tr>
-  <tr><td>多架构构建</td><td>用一条 <code>docker build</code> 命令为多个平台/架构构建镜像</td></tr>
-  <tr><td>多阶段构建</td><td>一个 Dockerfile 中有多个 <code>FROM</code>，后面的阶段用 <code>COPY --from</code> 只拿需要的产物，得到很小的生产镜像</td></tr>
-  <tr><td>观察状态 Observed state</td><td>集群和应用当前的实际状态。Swarm 总在努力让它等于期望状态</td></tr>
-  <tr><td>OCI 开放容器倡议</td><td>负责制定镜像、运行时、分发等底层容器标准的轻量治理组织</td></tr>
-  <tr><td>OpenAI 兼容端点</td><td>按 OpenAI API 规范接收请求、返回响应的 API 服务</td></tr>
-  <tr><td>编排器 Orchestrator</td><td>部署和管理应用的软件，如 Docker Swarm 和 Kubernetes：保持应用健康、扩缩容等</td></tr>
-  <tr><td>Overlay 网络</td><td>横跨多个 swarm 节点的扁平二层网络，基于 VXLAN；不同主机上的容器可直接通信</td></tr>
-  <tr><td>Push / Pull</td><td>把镜像上传到 / 从仓库下载</td></tr>
-  <tr><td>量化 Quantization</td><td>在不过多牺牲准确度的前提下减小 AI 模型体积和内存需求的方法</td></tr>
-  <tr><td>调和 Reconciliation</td><td>持续观察应用状态、确保观察状态等于期望状态的过程</td></tr>
-  <tr><td>仓库 Registry / 镜像库 Repository</td><td>集中存放镜像的地方 / 仓库中存放一组相关镜像的区域，可按库设置权限</td></tr>
-  <tr><td>runc</td><td>OCI 运行时规范的参考实现，Docker 的低层运行时，读作 “run see”</td></tr>
-  <tr><td>SBOM</td><td>软件物料清单：镜像中所有软件包及版本的列表，漏洞扫描和供应链安全的基础</td></tr>
-  <tr><td>seccomp</td><td>Linux 内核功能，Docker 用它限制容器可用的系统调用</td></tr>
-  <tr><td>Secret 机密</td><td>Docker 在运行时安全地向容器注入敏感数据的方式</td></tr>
-  <tr><td>Service 服务</td><td>Docker Swarm 的对象，为容器增加自我修复、扩缩容、滚动更新和回滚能力</td></tr>
-  <tr><td>Sigstore / Cosign</td><td>现代的 OCI 原生镜像签名方案，支持基于身份的无密钥签名，是 DCT 的主要替代品</td></tr>
-  <tr><td>Spin</td><td>让构建和运行 Wasm 应用变得简单的框架，最初由 Fermyon 创建</td></tr>
-  <tr><td>Swarm</td><td>Docker 原生的编排平台，Kubernetes 的轻量替代</td></tr>
-  <tr><td>卷 Volume</td><td>容器存放需要保留的重要数据的地方，可以独立于容器创建和删除</td></tr>
-  <tr><td>Wasm（WebAssembly）</td><td>一种新的虚拟指令集架构，比传统容器更小、更快、更安全、更便携，可在任何有 Wasm 运行时的地方运行</td></tr>
-  <tr><td>YAML</td><td>一种数据序列化格式，Compose 文件用它编写；它是 JSON 的超集</td></tr>
+  <tr><th>Compose</th><th>Kubernetes</th><th>注意</th></tr>
+  <tr><td><code>networks</code></td><td>没有直接对应</td><td>集群内所有 Pod 默认处在一个扁平网络里、互相可达。要隔离，用 NetworkPolicy（需要网络插件支持）</td></tr>
+  <tr><td><code>depends_on</code></td><td>没有对应</td><td>Kubernetes 不保证启动顺序。应用要能自己重试连接依赖；再配合就绪探针，依赖没准备好的 Pod 不会接收流量</td></tr>
+  <tr><td><code>entrypoint</code> / <code>command</code></td><td><code>command</code> / <code>args</code></td><td><strong>名字错位了！</strong>Compose 的 <code>command</code> 覆盖镜像的 CMD，对应 Kubernetes 的 <code>args</code>；Kubernetes 的 <code>command</code> 覆盖的是 ENTRYPOINT（下文有真实的坑）</td></tr>
+  <tr><td><code>build</code></td><td>没有对应</td><td>Kubernetes 只运行镜像，不构建。镜像要先由 CI 构建并推到仓库（第 19 章）</td></tr>
+  <tr><td><code>restart</code></td><td>控制器 + <code>restartPolicy</code></td><td>Pod 里的容器崩溃会被 kubelet 重启；整个 Pod 没了，由 Deployment 创建新的</td></tr>
 </table></div>
 
-<h2 id="changes">本教程相对原书的更新一览</h2>
+<h2 id="arch">Kubernetes 的架构</h2>
 
-<p>方便已经读过原书的读者快速了解差异：</p>
+<figure>
+<svg class="dgm" viewBox="0 0 760 350" role="img" aria-label="Kubernetes 控制平面与工作节点架构">
+  <rect class="bx-b" x="20" y="20" width="720" height="110" rx="14"/>
+  <text class="ttl on-b" x="40" y="44">控制平面（Control Plane）</text>
+  <rect class="bx" x="40" y="58" width="160" height="56" rx="8"/><text class="ttl" x="120" y="82" text-anchor="middle">API Server</text><text class="sm" x="120" y="100" text-anchor="middle">所有操作的入口</text>
+  <rect class="bx" x="215" y="58" width="160" height="56" rx="8"/><text class="ttl" x="295" y="82" text-anchor="middle">etcd</text><text class="sm" x="295" y="100" text-anchor="middle">保存期望状态</text>
+  <rect class="bx" x="390" y="58" width="160" height="56" rx="8"/><text class="ttl" x="470" y="82" text-anchor="middle">Scheduler</text><text class="sm" x="470" y="100" text-anchor="middle">决定 Pod 去哪个节点</text>
+  <rect class="bx" x="565" y="58" width="160" height="56" rx="8"/><text class="ttl" x="645" y="82" text-anchor="middle">Controllers</text><text class="sm" x="645" y="100" text-anchor="middle">调和循环</text>
+
+  <rect class="bx-p" x="20" y="150" width="130" height="50" rx="10"/>
+  <text class="ttl on-p" x="85" y="172" text-anchor="middle">kubectl</text>
+  <text class="sm" x="85" y="190" text-anchor="middle">你</text>
+  <path class="ln-p" d="M85 148 L110 118" marker-end="url(#ar-p)"/>
+
+  <rect class="bx-g" x="170" y="150" width="270" height="180" rx="12"/>
+  <text class="ttl on-g" x="190" y="174">工作节点 1</text>
+  <rect class="bx" x="190" y="186" width="110" height="34" rx="6"/><text class="sm" x="245" y="208" text-anchor="middle">kubelet</text>
+  <rect class="bx" x="310" y="186" width="110" height="34" rx="6"/><text class="sm" x="365" y="208" text-anchor="middle">kube-proxy</text>
+  <rect class="bx-a" x="190" y="228" width="230" height="34" rx="6"/><text class="sm on-a" x="305" y="250" text-anchor="middle">containerd → shim → runc</text>
+  <rect class="bx" x="190" y="270" width="70" height="44" rx="6"/><text class="sm" x="225" y="296" text-anchor="middle">Pod</text>
+  <rect class="bx" x="270" y="270" width="70" height="44" rx="6"/><text class="sm" x="305" y="296" text-anchor="middle">Pod</text>
+  <rect class="bx" x="350" y="270" width="70" height="44" rx="6"/><text class="sm" x="385" y="296" text-anchor="middle">Pod</text>
+
+  <rect class="bx-g" x="460" y="150" width="280" height="180" rx="12"/>
+  <text class="ttl on-g" x="480" y="174">工作节点 2</text>
+  <rect class="bx" x="480" y="186" width="115" height="34" rx="6"/><text class="sm" x="537" y="208" text-anchor="middle">kubelet</text>
+  <rect class="bx" x="605" y="186" width="115" height="34" rx="6"/><text class="sm" x="662" y="208" text-anchor="middle">kube-proxy</text>
+  <rect class="bx-a" x="480" y="228" width="240" height="34" rx="6"/><text class="sm on-a" x="600" y="250" text-anchor="middle">containerd → shim → runc</text>
+  <rect class="bx" x="480" y="270" width="75" height="44" rx="6"/><text class="sm" x="517" y="296" text-anchor="middle">Pod</text>
+  <rect class="bx" x="565" y="270" width="75" height="44" rx="6"/><text class="sm" x="602" y="296" text-anchor="middle">Pod</text>
+  <path class="ln" d="M305 148 V132"/><path class="ln" d="M600 148 V132"/>
+</svg>
+<figcaption>图 23-3　Kubernetes 架构（节点上的容器运行时，就是第 5 章讲过的 containerd + runc）</figcaption>
+</figure>
+
+<ul>
+  <li><strong>API Server</strong>：一切操作的唯一入口。<code>kubectl</code> 之于 API Server，就像 <code>docker</code> CLI 之于 Docker API（第 2 章）。</li>
+  <li><strong>etcd</strong>：保存集群的期望状态 —— Swarm 的集群存储也基于 etcd 的 Raft 实现（第 16 章）。</li>
+  <li><strong>Scheduler</strong>：为新 Pod 挑选合适的节点。</li>
+  <li><strong>Controllers</strong>：一组调和循环，不停地让观察状态追上期望状态（第 12 章图 12-4 的思想）。</li>
+  <li><strong>kubelet</strong>：每个节点上的代理，负责按要求启动和监控 Pod，它通过 CRI 接口调用<strong>containerd</strong>，containerd 再通过 shim 调用 <strong>runc</strong>。</li>
+</ul>
+
+<div class="box key">
+  <div class="t">&#9733; 你的 Docker 镜像可以原封不动地在 Kubernetes 上运行</div>
+  <p>
+    第 1 章说过，Kubernetes 早就不再通过 Docker 运行容器，而是直接使用 containerd。但这完全不影响你：
+    Docker 构建的镜像符合 OCI 标准（第 2 章），containerd 拉取、runc 运行，和在 Docker 里是同一套机制。
+    <strong>你在前面 22 章学到的镜像、分层、Dockerfile、多阶段构建、瘦身、签名，在 Kubernetes 里全部适用。</strong>
+  </p>
+</div>
+
+<h2 id="kind">搭建本地集群</h2>
+
+<p>学习 Kubernetes 不需要云服务器，在自己电脑上就能跑一个完整的集群：</p>
 
 <div class="tw"><table>
-  <tr><th>章节</th><th>更新内容</th></tr>
-  <tr><td>第 3 章</td><td>Linux 安装改用 Docker 官方 apt 源（原书用 snap）；Engine 29 最低 API 版本的变化（29.0 升到 1.44，29.3 放宽回 1.40）；containerd 镜像存储成为默认；rootless 模式</td></tr>
-  <tr><td>第 5 章</td><td>containerd 2.x；<code>live-restore</code> 配置</td></tr>
-  <tr><td>第 6 章</td><td>snapshotter 取代 graph driver；<code>--tree</code> 视图；Docker Desktop 移除 Scout 视图</td></tr>
-  <tr><td>第 7 章</td><td>退出码 137 与 PID 1 信号处理；<code>--init</code>；更正 Compose 与 Swarm 的重启策略写法；资源限制</td></tr>
-  <tr><td>第 8 章</td><td>构建检查 <code>--check</code>；exec 形式 CMD；.dockerignore；构建机密；Bake；构建历史</td></tr>
-  <tr><td>第 9 章</td><td>Compose v5；废弃 <code>version:</code> 和 <code>docker-compose</code>；更正卷挂载路径；healthcheck 依赖、watch、profiles</td></tr>
-  <tr><td>第 10 章</td><td>DMR 支持 Linux Engine；vLLM / Diffusers 后端；Anthropic / Ollama 兼容 API；Compose 顶层 <code>models:</code> 语法</td></tr>
-  <tr><td>第 11 章</td><td>Docker Desktop Wasm 功能已弃用</td></tr>
-  <tr><td>第 13 章</td><td>Engine 28 的网络加固；nftables；<code>ip</code> 命令替代 <code>brctl</code>；日志轮转</td></tr>
-  <tr><td>第 14 章</td><td>更正：数据平面加密使用 IPsec</td></tr>
-  <tr><td>第 15 章</td><td>新增绑定挂载、tmpfs、<code>-v</code> 与 <code>--mount</code>、卷备份</td></tr>
-  <tr><td>第 16 章</td><td>DCT 退役，改用 Cosign；Docker Hardened Images 免费；cgroup v1 弃用；Compose secrets；加固清单</td></tr>
-  <tr><td>第 17–22 章</td><td>原书没有的实战篇：排错手册、容器化开发环境与 Dev Containers、GitHub Actions 镜像流水线、部署到服务器（含 docker context）、Node / Python / Go / Java 生产级 Dockerfile、实测镜像瘦身实验</td></tr>
+  <tr><th>工具</th><th>原理</th><th>适合</th></tr>
+  <tr><td><strong>kind</strong>（Kubernetes in Docker）</td><td>每个 Kubernetes 节点就是一个 Docker 容器</td><td>学习、CI 测试，可以轻松创建多节点集群。本章使用它</td></tr>
+  <tr><td>Docker Desktop 内置</td><td>Settings → Kubernetes → Enable，新版本默认用 kind 创建集群</td><td>已经在用 Docker Desktop，点一下就有</td></tr>
+  <tr><td>minikube</td><td>虚拟机或容器</td><td>插件丰富的学习环境</td></tr>
+  <tr><td>k3d / k3s</td><td>轻量发行版</td><td>资源有限的机器、边缘设备</td></tr>
 </table></div>
+
+<p>先安装 <code>kubectl</code> 和 <code>kind</code>（macOS：<code>brew install kubectl kind</code>；其他系统见 <a href="https://kubernetes.io/docs/tasks/tools/">kubernetes.io/docs/tasks/tools</a> 和 <a href="https://kind.sigs.k8s.io/">kind.sigs.k8s.io</a>），然后：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ kind create cluster --name counter
+Creating cluster "counter" ...
+ ✓ Ensuring node image (kindest/node:v1.37.0) 🖼
+ ✓ Preparing nodes 📦
+ ✓ Starting control-plane 🕹️
+Set kubectl context to "kind-counter"
+
+$ kubectl get nodes
+NAME                    STATUS   ROLES           AGE   VERSION
+counter-control-plane   Ready    control-plane   40s   v1.37.0
+
+$ docker ps --format '{{.Names}}\t{{.Image}}'      # 节点就是一个容器
+counter-control-plane   kindest/node:v1.37.0
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 磁盘和内存</div>
+  <p>kind 的节点镜像解压后约 1 GB，集群运行时至少需要 2 GB 内存。在资源紧张的机器上创建前先 <code>df -h</code> 看看剩余空间。用完后 <code>kind delete cluster --name counter</code> 会删除整个集群。</p>
+</div>
+
+<h2 id="translate">翻译计数器应用</h2>
+
+<p>这是第 12 章计数器应用的 Compose 文件（去掉了 Swarm 专用的部分）：</p>
+
+<div class="code" data-lang="yaml" data-file="compose.yaml（第 9、12 章）">
+<pre>
+services:
+  web-fe:
+    image: nigelpoulton/ddd-book:swarm-app
+    deploy:
+      replicas: 3
+    ports:
+      - target: 8080
+        published: 5001
+  redis:
+    image: redis:alpine
+    volumes:
+      - type: volume
+        source: counter-vol
+        target: /data
+volumes:
+  counter-vol:
+</pre>
+</div>
+
+<p>翻译成 Kubernetes，会变成下面这些对象：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="计数器应用在 Kubernetes 中的对象结构">
+  <rect class="bx-d" x="20" y="20" width="720" height="290" rx="14"/>
+  <text class="ttl" x="40" y="44">Namespace: counter</text>
+
+  <rect class="bx-a" x="40" y="60" width="330" height="180" rx="12"/>
+  <text class="ttl on-a" x="60" y="84">Deployment: web-fe（replicas: 3）</text>
+  <rect class="bx" x="60" y="98" width="90" height="60" rx="8"/><text class="sm" x="105" y="124" text-anchor="middle">Pod</text><text class="sm" x="105" y="142" text-anchor="middle">app=web-fe</text>
+  <rect class="bx" x="160" y="98" width="90" height="60" rx="8"/><text class="sm" x="205" y="124" text-anchor="middle">Pod</text><text class="sm" x="205" y="142" text-anchor="middle">app=web-fe</text>
+  <rect class="bx" x="260" y="98" width="90" height="60" rx="8"/><text class="sm" x="305" y="124" text-anchor="middle">Pod</text><text class="sm" x="305" y="142" text-anchor="middle">app=web-fe</text>
+  <rect class="bx-b" x="60" y="178" width="290" height="44" rx="8"/>
+  <text class="ttl on-b" x="205" y="198" text-anchor="middle">Service: web-fe</text>
+  <text class="sm" x="205" y="214" text-anchor="middle">选中 app=web-fe 的 Pod · 端口 80 → 8080</text>
+  <path class="ln-b" d="M105 176 V160"/><path class="ln-b" d="M205 176 V160"/><path class="ln-b" d="M305 176 V160"/>
+
+  <rect class="bx-g" x="400" y="60" width="320" height="180" rx="12"/>
+  <text class="ttl on-g" x="420" y="84">Deployment: redis（replicas: 1）</text>
+  <rect class="bx" x="420" y="98" width="130" height="60" rx="8"/><text class="sm" x="485" y="124" text-anchor="middle">Pod</text><text class="sm" x="485" y="142" text-anchor="middle">app=redis</text>
+  <rect class="bx-p" x="570" y="98" width="130" height="60" rx="30"/><text class="sm on-p" x="635" y="124" text-anchor="middle">PVC</text><text class="sm" x="635" y="142" text-anchor="middle">redis-data 1Gi</text>
+  <path class="ln-p" d="M552 128 H566"/>
+  <rect class="bx-b" x="420" y="178" width="280" height="44" rx="8"/>
+  <text class="ttl on-b" x="560" y="198" text-anchor="middle">Service: redis</text>
+  <text class="sm" x="560" y="214" text-anchor="middle">DNS 名 redis · 端口 6379</text>
+  <path class="ln-b" d="M485 176 V160"/>
+
+  <path class="ln-a" d="M352 200 H416" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="384" y="190" text-anchor="middle">redis:6379</text>
+  <rect class="bx" x="40" y="256" width="680" height="40" rx="8"/>
+  <text class="sm" x="380" y="281" text-anchor="middle">Service 通过<tspan style="font-weight:700">标签选择器</tspan>找到 Pod：Pod 换了、IP 变了，Service 的名字和地址都不变</text>
+</svg>
+<figcaption>图 23-4　计数器应用的 Kubernetes 对象</figcaption>
+</figure>
+
+<p>把清单放在一个 <code>k8s/</code> 目录里，文件名前的数字只是为了让它们按顺序应用。先是命名空间：</p>
+
+<div class="code" data-lang="yaml" data-file="k8s/00-namespace.yaml">
+<pre>
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: counter
+</pre>
+</div>
+
+<p>然后是 redis：一个 PVC（相当于 Compose 的命名卷）、一个 Deployment、一个 Service：</p>
+
+<div class="code" data-lang="yaml" data-file="k8s/10-redis.yaml">
+<pre>
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: counter
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: counter
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate                 # 卷只能挂到一个 Pod 上：先停旧的再起新的
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:8-alpine
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: redis-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis                      # 这个名字就是 DNS 名：应用里连接 redis:6379
+  namespace: counter
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+</pre>
+</div>
+
+<p>最后是 web-fe：</p>
+
+<div class="code" data-lang="yaml" data-file="k8s/20-web.yaml">
+<pre>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-fe
+  namespace: counter
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0            # 更新时不减少可用副本
+      maxSurge: 1                  # 每次多起 1 个新副本
+  selector:
+    matchLabels:
+      app: web-fe
+  template:
+    metadata:
+      labels:
+        app: web-fe
+    spec:
+      containers:
+        - name: web-fe
+          image: nigelpoulton/ddd-book:swarm-app
+          ports:
+            - containerPort: 8080
+          readinessProbe:          # 就绪了才接收流量
+            tcpSocket:             # 这个示例应用没有 /health，访问 / 会让计数器加 1
+              port: 8080
+            periodSeconds: 5
+          livenessProbe:           # 卡死了就重启
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-fe
+  namespace: counter
+spec:
+  selector:
+    app: web-fe
+  ports:
+    - port: 80
+      targetPort: 8080
+</pre>
+</div>
+
+<h3>逐项解读</h3>
+
+<div class="tw"><table>
+  <tr><th>写法</th><th>含义</th></tr>
+  <tr><td><code>selector.matchLabels</code> 与 <code>template.metadata.labels</code></td><td>Deployment 靠标签认领“自己的” Pod，两者必须一致。Service 也是靠标签选择 Pod 的</td></tr>
+  <tr><td><code>strategy: Recreate</code>（redis）</td><td>ReadWriteOnce 的卷同一时间只能挂到一个节点上，所以更新时先停旧 Pod 再起新 Pod</td></tr>
+  <tr><td><code>maxUnavailable: 0</code>、<code>maxSurge: 1</code>（web-fe）</td><td>滚动更新时先多起一个新 Pod，就绪后再停一个旧的，始终保持 3 个可用 —— 第 12 章 Swarm <code>update_config</code> 的对应物</td></tr>
+  <tr><td><code>readinessProbe</code></td><td>探测通过前，Service 不会把流量转给这个 Pod。它部分替代了 Compose 的 <code>depends_on</code></td></tr>
+  <tr><td><code>livenessProbe</code></td><td>探测失败就重启容器，处理“进程还在但已经卡死”的情况</td></tr>
+  <tr><td><code>resources.requests</code> / <code>limits</code></td><td>requests 是调度依据（节点要有这么多空闲资源才会被选中），limits 是上限（第 16 章的 cgroups）</td></tr>
+  <tr><td>Service 名 <code>redis</code></td><td>集群 DNS 会解析 <code>redis</code>（同命名空间）或 <code>redis.counter.svc.cluster.local</code>（完整名），所以应用代码一行都不用改</td></tr>
+</table></div>
+
+<div class="box warn">
+  <div class="t">&#9888; 一个真实的迁移坑：command 覆盖了 ENTRYPOINT</div>
+  <p>
+    第 12 章的 Compose 文件里写着 <code>command: python app.py</code>。直接翻译成 Kubernetes 的 <code>command: ["python", "app.py"]</code>，Pod 会一直 <code>CrashLoopBackOff</code>。
+    查一下镜像配置就明白了：它的 ENTRYPOINT 是 <code>["python", "app/app.py"]</code>，工作目录是 <code>/app</code>。
+  </p>
+  <ul>
+    <li>在 <strong>Compose</strong> 里，<code>command</code> 只替换 CMD，于是变成 <code>python app/app.py python app.py</code>，后面两个多余参数被程序忽略，碰巧能跑；</li>
+    <li>在 <strong>Kubernetes</strong> 里，<code>command</code> 替换的是 ENTRYPOINT，于是执行 <code>python app.py</code>，而 <code>/app/app.py</code> 并不存在。</li>
+  </ul>
+  <p>本章的清单干脆不写 <code>command</code>，直接用镜像自带的 ENTRYPOINT。迁移时可以用 <code>docker buildx imagetools inspect 镜像 --format '{{json .Image}}'</code> 在不拉取镜像的情况下查看它的 ENTRYPOINT 和 CMD。</p>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 关于探针，以及 M 系列 Mac</div>
+  <ul>
+    <li>这个示例应用没有专门的健康检查接口，而访问 <code>/</code> 会让计数器加 1，所以两个探针都用 TCP 端口检查。<strong>真实项目应该提供一个没有副作用的 <code>/health</code></strong>（第 20 章），就绪探针用 <code>httpGet</code> 请求它，这样还能顺便检查数据库连接。</li>
+    <li><code>nigelpoulton/ddd-book:swarm-app</code> 只有 amd64 版本。在 Apple 芯片的 Mac 上可能需要借助模拟运行；也可以用第 9 章的源码自己构建一个 arm64 镜像，再用 <code>kind load docker-image 镜像名 --name counter</code> 直接载入集群。</li>
+  </ul>
+</div>
+
+<h3>部署</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+$ kubectl apply -f k8s/
+namespace/counter created
+persistentvolumeclaim/redis-data created
+deployment.apps/redis created
+service/redis created
+deployment.apps/web-fe created
+service/web-fe created
+
+$ kubectl get pods -n counter -o wide
+NAME                      READY   STATUS    RESTARTS   AGE   IP            NODE
+redis-6d9f7c8b5d-x2k8p    1/1     Running   0          30s   10.244.0.5    counter-control-plane
+web-fe-7c9b6d5f4-4tq2m    1/1     Running   0          30s   10.244.0.6    counter-control-plane
+web-fe-7c9b6d5f4-8hzwl    1/1     Running   0          30s   10.244.0.7    counter-control-plane
+web-fe-7c9b6d5f4-r5nvd    1/1     Running   0          30s   10.244.0.8    counter-control-plane
+
+$ kubectl port-forward -n counter svc/web-fe 5001:80
+Forwarding from 127.0.0.1:5001 -> 8080
+</pre>
+</div>
+
+<p>浏览器访问 <code>http://localhost:5001</code>，刷新几次看计数器增加。<code>port-forward</code> 是本地调试时最简单的访问方式，正式对外暴露见后文。（Pod 名称和 IP 是示例，你的会不一样。）</p>
 
 <div class="box tip">
-  <div class="t">&#128161; 最后的话</div>
+  <div class="t">&#128161; 出问题时怎么查</div>
+  <p>和第 17 章的思路一样，只是命令换了：</p>
+  <div class="code" data-lang="bash"><pre>
+$ kubectl get pods -n counter                  # 看状态（相当于 docker ps）
+$ kubectl describe pod -n counter 名字         # 看事件：拉取失败、调度失败、探针失败……
+$ kubectl logs -n counter deploy/web-fe        # 看日志（相当于 docker logs）
+$ kubectl exec -it -n counter deploy/web-fe -- sh    # 进容器（相当于 docker exec）
+</pre></div>
+  <p>最常见的几种状态：<code>ImagePullBackOff</code>（镜像名写错或没有权限）、<code>CrashLoopBackOff</code>（容器反复退出，看 logs）、<code>Pending</code>（没有节点能满足资源请求，或 PVC 绑定不上，看 describe）。</p>
+</div>
+
+<h2 id="ops">自我修复、扩缩容、更新与回滚</h2>
+
+<p>这些操作你在第 12 章用 Swarm 做过一遍，现在换成 Kubernetes：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+# 自我修复：删掉一个 Pod，Deployment 立刻补一个新的
+$ kubectl delete pod -n counter web-fe-7c9b6d5f4-4tq2m
+$ kubectl get pods -n counter          # 马上出现一个新名字的 Pod
+
+# 扩缩容
+$ kubectl scale deployment/web-fe -n counter --replicas=5
+
+# 滚动更新到新版本镜像
+$ kubectl set image deployment/web-fe -n counter web-fe=nigelpoulton/ddd-book:swarm-appv2
+$ kubectl rollout status deployment/web-fe -n counter
+deployment "web-fe" successfully rolled out
+
+# 有问题？一条命令回滚到上一个版本
+$ kubectl rollout undo deployment/web-fe -n counter
+$ kubectl rollout history deployment/web-fe -n counter
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="Deployment 通过 ReplicaSet 实现滚动更新和回滚">
+  <rect class="bx-a" x="280" y="20" width="200" height="50" rx="10"/>
+  <text class="ttl on-a" x="380" y="42" text-anchor="middle">Deployment: web-fe</text>
+  <text class="sm" x="380" y="60" text-anchor="middle">期望：3 个 swarm-appv2</text>
+  <path class="ln" d="M330 72 L190 104" marker-end="url(#ar)"/>
+  <path class="ln" d="M430 72 L570 104" marker-end="url(#ar)"/>
+  <rect class="bx-d" x="40" y="108" width="300" height="90" rx="12"/>
+  <text class="ttl" x="190" y="132" text-anchor="middle">ReplicaSet（旧）· swarm-app</text>
+  <text class="sm" x="190" y="152" text-anchor="middle">副本数 3 → 2 → 1 → 0</text>
+  <text class="sm" x="190" y="172" text-anchor="middle">缩到 0 但保留：回滚时直接用它</text>
+  <rect class="bx-g" x="420" y="108" width="300" height="90" rx="12"/>
+  <text class="ttl on-g" x="570" y="132" text-anchor="middle">ReplicaSet（新）· swarm-appv2</text>
+  <text class="sm" x="570" y="152" text-anchor="middle">副本数 0 → 1 → 2 → 3</text>
+  <text class="sm" x="570" y="172" text-anchor="middle">每个新 Pod 就绪后才继续</text>
+  <text class="lbl" x="380" y="214" text-anchor="middle">rollout undo = 把两个 ReplicaSet 的副本数反过来调一遍</text>
+</svg>
+<figcaption>图 23-5　Deployment 用两个 ReplicaSet 实现滚动更新和回滚</figcaption>
+</figure>
+
+<div class="box key">
+  <div class="t">&#9733; 同样的教训：声明式地管理</div>
   <p>
-    Docker、AI 和云原生生态变化很快，两三年前的资料可能已经过时。遇到和本教程不一致的地方，以
-    <a href="https://docs.docker.com">Docker 官方文档</a>和各项目的发布说明为准。祝你玩转容器！&#128051;
+    <code>kubectl scale</code>、<code>kubectl set image</code> 这些命令式操作，和第 12 章 Swarm 的 <code>docker service scale</code> 有同样的问题：
+    集群状态和 Git 里的 YAML 会出现“配置漂移”。正式环境中应该<strong>修改 YAML 文件、提交到 Git、再 <code>kubectl apply</code></strong>；
+    更进一步，用 Argo CD 或 Flux 这类 GitOps 工具，让集群自动与 Git 仓库保持一致。
   </p>
+</div>
+
+<h2 id="config">配置与机密</h2>
+
+<p>Compose 里的 <code>environment</code> 和 <code>secrets</code>，在 Kubernetes 里对应 ConfigMap 和 Secret：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ kubectl create configmap web-config -n counter --from-literal=LOG_LEVEL=info
+$ kubectl create secret generic db-cred -n counter --from-literal=password='S3cr3t!'
+</pre>
+</div>
+
+<div class="code" data-lang="yaml" data-file="在容器定义里引用">
+<pre>
+          envFrom:
+            - configMapRef:
+                name: web-config              # 所有键都变成环境变量
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-cred
+                  key: password
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; Secret 默认只是 base64 编码，不是加密</div>
+  <p>
+    任何有权限读取 Secret 的人都能直接解码出明文，而且<strong>绝对不能把 Secret 的 YAML 提交到 Git</strong>。
+    生产环境通常会开启 etcd 静态加密、用 RBAC 限制读取权限，并借助 External Secrets Operator、Sealed Secrets 或云厂商的密钥服务来管理机密。
+  </p>
+</div>
+
+<h2 id="expose">对外暴露服务</h2>
+
+<p>Service 有几种类型，决定了它能从哪里被访问：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="ClusterIP、NodePort、LoadBalancer 和 Gateway 的访问范围">
+  <rect class="bx" x="20" y="20" width="170" height="220" rx="12"/>
+  <text class="ttl" x="105" y="46" text-anchor="middle">ClusterIP（默认）</text>
+  <text class="sm" x="105" y="76" text-anchor="middle">只在集群内部可访问</text>
+  <text class="sm" x="105" y="100" text-anchor="middle">服务之间互相调用</text>
+  <text class="sm" x="105" y="124" text-anchor="middle">本章的 redis、web-fe</text>
+  <text class="sm" x="105" y="200" text-anchor="middle">≈ Compose 里</text>
+  <text class="sm" x="105" y="218" text-anchor="middle">不写 ports 的服务</text>
+  <rect class="bx-b" x="205" y="20" width="170" height="220" rx="12"/>
+  <text class="ttl on-b" x="290" y="46" text-anchor="middle">NodePort</text>
+  <text class="sm" x="290" y="76" text-anchor="middle">每个节点上开一个</text>
+  <text class="sm" x="290" y="94" text-anchor="middle">30000–32767 的端口</text>
+  <text class="sm" x="290" y="124" text-anchor="middle">测试可以，生产少用</text>
+  <text class="sm" x="290" y="200" text-anchor="middle">≈ Swarm 的</text>
+  <text class="sm" x="290" y="218" text-anchor="middle">ingress 路由网格</text>
+  <rect class="bx-g" x="390" y="20" width="170" height="220" rx="12"/>
+  <text class="ttl on-g" x="475" y="46" text-anchor="middle">LoadBalancer</text>
+  <text class="sm" x="475" y="76" text-anchor="middle">云厂商自动创建一个</text>
+  <text class="sm" x="475" y="94" text-anchor="middle">外部负载均衡器</text>
+  <text class="sm" x="475" y="124" text-anchor="middle">每个服务一个，花钱</text>
+  <text class="sm" x="475" y="200" text-anchor="middle">四层（TCP/UDP）</text>
+  <rect class="bx-a" x="575" y="20" width="165" height="220" rx="12"/>
+  <text class="ttl on-a" x="657" y="46" text-anchor="middle">Gateway API</text>
+  <text class="sm" x="657" y="76" text-anchor="middle">一个入口，按域名、</text>
+  <text class="sm" x="657" y="94" text-anchor="middle">路径路由到多个服务</text>
+  <text class="sm" x="657" y="124" text-anchor="middle">HTTPS、流量拆分</text>
+  <text class="sm" x="657" y="200" text-anchor="middle">≈ 第 20 章的</text>
+  <text class="sm" x="657" y="218" text-anchor="middle">Caddy 反向代理</text>
+  <text class="lbl" x="380" y="262" text-anchor="middle">Web 应用通常是：服务都用 ClusterIP，前面放一个 Gateway 统一对外</text>
+</svg>
+<figcaption>图 23-6　Service 类型与 Gateway</figcaption>
+</figure>
+
+<div class="box new">
+  <div class="t">&#10024; 最新变化：Ingress NGINX 已退役，改用 Gateway API</div>
+  <p>
+    过去几年，对外暴露 HTTP 服务最常见的做法是 <strong>Ingress</strong> 资源配合 <strong>ingress-nginx</strong> 控制器，大量教程至今还这么写。
+    但由于反复出现的安全问题，Kubernetes 项目宣布退役 ingress-nginx：<strong>它已于 2026 年 3 月 24 日正式结束维护，仓库已归档</strong>，不会再有安全修复。
+  </p>
+  <p>
+    官方指定的继任者是 <strong>Gateway API</strong>，它用 GatewayClass、Gateway、HTTPRoute 等角色清晰的资源，取代了过去依赖各家控制器私有注解的做法。
+    Envoy Gateway、NGINX Gateway Fabric、Istio、Cilium、Traefik、kgateway 等都实现了它。已有的 Ingress 配置可以用官方工具
+    <a href="https://kubernetes.io/blog/2026/03/20/ingress2gateway-1-0-release">ingress2gateway 1.0</a> 转换。
+    注意：退役的是 ingress-nginx 这个控制器，Ingress API 本身仍然存在，其他实现也仍可使用。
+  </p>
+</div>
+
+<p>用 Gateway API 暴露 web-fe，需要先在集群里安装一个 Gateway 实现（以 Envoy Gateway 为例，按其官方文档用 Helm 安装后会提供名为 <code>eg</code> 的 GatewayClass），然后：</p>
+
+<div class="code" data-lang="yaml" data-file="gateway.yaml">
+<pre>
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: web
+  namespace: counter
+spec:
+  gatewayClassName: eg             # 由你安装的 Gateway 实现提供，这里以 Envoy Gateway 为例
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web-fe
+  namespace: counter
+spec:
+  parentRefs:
+    - name: web
+  hostnames: ["counter.example.com"]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: web-fe
+          port: 80
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 180" role="img" aria-label="Gateway API 的请求路径">
+  <rect class="bx-b" x="20" y="60" width="120" height="60" rx="10"/>
+  <text class="ttl on-b" x="80" y="86" text-anchor="middle">用户</text>
+  <text class="mono" x="80" y="106" text-anchor="middle" style="font-size:10px">counter.example.com</text>
+  <path class="ln-a" d="M142 90 H186" marker-end="url(#ar-a)"/>
+  <rect class="bx-a" x="190" y="50" width="150" height="80" rx="10"/>
+  <text class="ttl on-a" x="265" y="76" text-anchor="middle">Gateway: web</text>
+  <text class="sm" x="265" y="96" text-anchor="middle">监听 80 端口</text>
+  <text class="sm" x="265" y="114" text-anchor="middle">运维团队管理</text>
+  <path class="ln-a" d="M342 90 H386" marker-end="url(#ar-a)"/>
+  <rect class="bx-p" x="390" y="50" width="160" height="80" rx="10"/>
+  <text class="ttl on-p" x="470" y="76" text-anchor="middle">HTTPRoute</text>
+  <text class="sm" x="470" y="96" text-anchor="middle">域名 + 路径 → 服务</text>
+  <text class="sm" x="470" y="114" text-anchor="middle">应用团队管理</text>
+  <path class="ln-a" d="M552 90 H596" marker-end="url(#ar-a)"/>
+  <rect class="bx-g" x="600" y="50" width="140" height="80" rx="10"/>
+  <text class="ttl on-g" x="670" y="76" text-anchor="middle">Service</text>
+  <text class="mono" x="670" y="96" text-anchor="middle">web-fe:80</text>
+  <text class="sm" x="670" y="114" text-anchor="middle">→ 3 个 Pod</text>
+  <text class="lbl" x="380" y="164" text-anchor="middle">入口（Gateway）和路由规则（HTTPRoute）分开，不同团队各管一段</text>
+</svg>
+<figcaption>图 23-7　Gateway API 的请求路径</figcaption>
+</figure>
+
+<h2 id="kompose">Kompose：自动转换能做到什么程度</h2>
+
+<p><strong>Kompose</strong> 是 Kubernetes 官方的转换工具，能把 Compose 文件直接转换成 Kubernetes 清单。对前面的 Compose 文件实际运行一次（Kompose 1.38）：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ kompose convert -f compose.yaml -o out/
+WARN Service "redis" won't be created because 'ports' is not specified
+INFO Kubernetes file "out/web-fe-service.yaml" created
+INFO Kubernetes file "out/redis-deployment.yaml" created
+INFO Kubernetes file "out/counter-vol-persistentvolumeclaim.yaml" created
+INFO Kubernetes file "out/web-fe-deployment.yaml" created
+</pre>
+</div>
+
+<p>生成的 4 个文件都能通过 Kubernetes 的格式校验，但仔细看第一行警告：</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 格式合法，但跑不起来</div>
+  <p>
+    Kompose <strong>没有给 redis 生成 Service</strong>，因为 Compose 文件里 redis 没有写 <code>ports</code> ——
+    在 Compose 里，同一网络上的服务本来就不需要 <code>ports</code> 也能互相访问；但在 Kubernetes 里，没有 Service 就没有 <code>redis</code> 这个 DNS 名，
+    web-fe 会一直报“连接不上 redis”。修复方法：在 Compose 文件的 redis 下加上 <code>expose: ["6379"]</code> 或 <code>ports</code> 再转换，或者手动补一个 Service。
+  </p>
+</div>
+
+<p>把 Kompose 的输出和本章手写的清单对比一下：</p>
+
+<div class="tw"><table>
+  <tr><th></th><th>Kompose 生成</th><th>本章手写</th></tr>
+  <tr><td>redis 的 Service</td><td><strong>缺失</strong>（应用连不上数据库）</td><td>有</td></tr>
+  <tr><td>web-fe 的 Service 端口</td><td>5001 → 8080（照搬主机端口，名字叫 <code>"5001"</code>）</td><td>80 → 8080</td></tr>
+  <tr><td>命名空间</td><td>没有（部署到 default）</td><td>counter</td></tr>
+  <tr><td>健康探针</td><td>没有</td><td>就绪 + 存活探针</td></tr>
+  <tr><td>资源请求和上限</td><td>没有</td><td>有</td></tr>
+  <tr><td>滚动更新策略</td><td>默认值</td><td>maxUnavailable: 0</td></tr>
+  <tr><td>redis 更新策略</td><td>Recreate ✓（识别出了卷）</td><td>Recreate</td></tr>
+  <tr><td>标签</td><td><code>io.kompose.service</code> + 一堆注解</td><td>简洁的 <code>app</code></td></tr>
+</table></div>
+
+<p><strong>结论：</strong>Kompose 适合用来快速得到一个起点、了解对应关系，但生成的清单一定要人工审查和补全。对于正式项目，建议手写清单（或者用 Helm / Kustomize 管理），而不是依赖一次性转换。</p>
+
+<h2 id="next">接下来学什么</h2>
+
+<div class="cards">
+  <div class="card"><h4>Kustomize / Helm</h4><p>管理开发、测试、生产多套环境的差异。Kustomize 内置在 kubectl 里（<code>kubectl apply -k</code>）；Helm 是 Kubernetes 的“包管理器”。</p></div>
+  <div class="card"><h4>GitOps</h4><p>Argo CD、Flux 让集群自动与 Git 仓库同步，接上第 19 章的 CI：CI 更新镜像标签，GitOps 负责部署。</p></div>
+  <div class="card"><h4>有状态应用</h4><p>StatefulSet 为数据库等提供稳定的名字和独立的存储。生产数据库通常用托管服务或专门的 Operator。</p></div>
+  <div class="card"><h4>托管 Kubernetes</h4><p>EKS、GKE、AKS 等由云厂商维护控制平面，你只需要关心工作负载。</p></div>
+</div>
+
+<h2 id="cleanup">清理</h2>
+
+<div class="code" data-lang="bash">
+<pre>
+$ kubectl delete namespace counter        # 删除命名空间里的所有对象（包括 PVC 和数据）
+$ kind delete cluster --name counter      # 删除整个集群
+</pre>
+</div>
+
+<h2 id="commands">命令速查：docker → kubectl</h2>
+
+<div class="tw"><table class="cheat">
+  <tr><th>Docker / Compose</th><th>Kubernetes</th></tr>
+  <tr><td><code>docker compose up -d</code></td><td><code>kubectl apply -f k8s/</code></td></tr>
+  <tr><td><code>docker compose down</code></td><td><code>kubectl delete -f k8s/</code> 或删除命名空间</td></tr>
+  <tr><td><code>docker ps</code></td><td><code>kubectl get pods</code></td></tr>
+  <tr><td><code>docker logs -f</code></td><td><code>kubectl logs -f</code></td></tr>
+  <tr><td><code>docker exec -it … sh</code></td><td><code>kubectl exec -it … -- sh</code></td></tr>
+  <tr><td><code>docker inspect</code></td><td><code>kubectl describe</code> / <code>kubectl get -o yaml</code></td></tr>
+  <tr><td><code>docker service scale</code></td><td><code>kubectl scale</code></td></tr>
+  <tr><td><code>docker service update --image</code></td><td><code>kubectl set image</code> + <code>kubectl rollout status</code></td></tr>
+  <tr><td><code>docker service rollback</code></td><td><code>kubectl rollout undo</code></td></tr>
+  <tr><td><code>docker context use</code></td><td><code>kubectl config use-context</code></td></tr>
+  <tr><td><code>-p 5001:8080</code>（临时访问）</td><td><code>kubectl port-forward svc/web-fe 5001:80</code></td></tr>
+</table></div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>Kubernetes 很强大但也复杂，需求简单时 Compose、Swarm 或托管平台可能是更好的选择。</li>
+  <li>Compose 的概念大多能对应到 Kubernetes：服务 → Deployment + Service，卷 → PVC，环境变量 → ConfigMap，机密 → Secret，健康检查 → 探针。</li>
+  <li>没有直接对应的要特别注意：<code>depends_on</code>（要靠重试和就绪探针）、<code>networks</code>（默认扁平网络）、<code>build</code>（先由 CI 构建），以及名字错位的 <code>command</code>/<code>args</code>。</li>
+  <li>Kubernetes 的节点用 containerd + runc 运行容器，你的 Docker 镜像原封不动就能运行。</li>
+  <li>kind 让你在本地用 Docker 容器跑一个完整的 Kubernetes 集群。</li>
+  <li>对外暴露 HTTP 服务应该使用 Gateway API；ingress-nginx 已于 2026 年 3 月退役。</li>
+  <li>Kompose 能快速给出起点，但会漏掉东西（本例中漏掉了 redis 的 Service），一定要人工审查。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>用 kind 创建集群，部署本章的清单，用 <code>port-forward</code> 访问计数器应用。</li>
+    <li>刷新几次页面后执行 <code>kubectl delete pod -n counter -l app=redis</code>，等新的 redis Pod 起来后再刷新，确认计数没有丢失（PVC 的作用）。再删除命名空间重建一次，观察计数是否归零。</li>
+    <li>故意在 web-fe 的容器定义里加上 <code>command: ["python", "app.py"]</code> 重新 apply，用 <code>kubectl get pods</code> 和 <code>kubectl logs</code> 观察 CrashLoopBackOff，然后改成 <code>args</code> 看看会怎样。</li>
+    <li>用 <code>kubectl set image</code> 更新到 <code>swarm-appv2</code>，同时在另一个终端运行 <code>kubectl get pods -n counter -w</code> 观察滚动更新过程，然后 <code>rollout undo</code>。</li>
+    <li>对第 9 章的 Compose 文件运行 <code>kompose convert</code>，找出生成的清单里还缺什么，并补全它。</li>
+  </ol>
 </div>
 
 <div id="pager"></div>

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Docker 从零到精通 · 面向初学者的图解教程</title>
-<meta name="description" content="改编自《Docker Deep Dive》（2025 年 5 月版），同步到 2026 年 9 月的 Docker 最新版本。23 章图解教程，从容器原理到 Compose、网络、安全与本地大模型。">
+<meta name="description" content="改编自《Docker Deep Dive》（2025 年 5 月版），同步到 2026 年 9 月的 Docker 最新版本。24 章图解教程，从容器原理到 Compose、网络、安全与本地大模型。">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body data-chapter="0">
@@ -13,7 +13,7 @@
 <main>
 
 <div class="hero">
-  <span class="chapter-eyebrow">面向初学者的 23 章图解教程</span>
+  <span class="chapter-eyebrow">面向初学者的 24 章图解教程</span>
   <h1>Docker 从零到精通</h1>
   <p class="sub">
     这套教程改编自 Nigel Poulton 的《Docker Deep Dive: Zero to Docker in a Single Book》（2025 年 5 月版）。
@@ -105,7 +105,7 @@
   <li><strong>会用几条 docker 命令，但说不清原理</strong>的人。第 5–8 章会拆开引擎、镜像分层、容器读写层和构建缓存。</li>
   <li><strong>需要把项目容器化并上线</strong>的开发者。Dockerfile 最佳实践、多阶段构建、Compose、网络、卷、安全都有专章。</li>
   <li><strong>想在本地跑大模型</strong>的人。第 10 章用 Docker Model Runner 拉模型、调 API、接入 Compose。</li>
-  <li><strong>要在团队里真正用起来</strong>的人。第 17–22 章讲排错、用容器搭开发环境、用 GitHub Actions 搭镜像流水线、部署到服务器、各语言的生产级 Dockerfile，以及一次真实测量的镜像瘦身实验。</li>
+  <li><strong>要在团队里真正用起来</strong>的人。第 17–23 章讲排错、用容器搭开发环境、用 GitHub Actions 搭镜像流水线、部署到服务器、各语言的生产级 Dockerfile，一次真实测量的镜像瘦身实验，以及从 Compose 迁移到 Kubernetes。</li>
 </ul>
 
 <div class="box note">
@@ -124,7 +124,7 @@
 <svg class="dgm" viewBox="0 0 760 360" role="img" aria-label="教程知识地图">
   <rect class="bx-p" x="20" y="20" width="720" height="60" rx="10"/>
   <text class="ttl on-p" x="36" y="44">应用层 · 你每天打交道的东西</text>
-  <text class="sm" x="36" y="66">第 8 章 Dockerfile ・ 第 9 章 Compose ・ 第 10 章 AI 模型 ・ 第 11 章 Wasm ・ 第 17–22 章 实战</text>
+  <text class="sm" x="36" y="66">第 8 章 Dockerfile ・ 第 9 章 Compose ・ 第 10 章 AI 模型 ・ 第 11 章 Wasm ・ 第 17–23 章 实战</text>
 
   <rect class="bx-g" x="20" y="96" width="350" height="76" rx="10"/>
   <text class="ttl on-g" x="36" y="120">核心对象</text>
@@ -156,7 +156,7 @@
 <h2 id="how">怎么用这套教程</h2>
 
 <ul>
-  <li><strong>按顺序读。</strong>第 1–9 章是主线，建议顺序阅读；第 10–16 章相对独立，可以按需跳读；第 17–22 章是实战篇（排错、开发环境、CI/CD、部署、各语言 Dockerfile、镜像瘦身），学完主线后随时回来查。</li>
+  <li><strong>按顺序读。</strong>第 1–9 章是主线，建议顺序阅读；第 10–16 章相对独立，可以按需跳读；第 17–23 章是实战篇（排错、开发环境、CI/CD、部署、各语言 Dockerfile、镜像瘦身、迁移到 Kubernetes），学完主线后随时回来查。</li>
   <li><strong>亲手敲命令。</strong>每章都有可以直接复制的命令（点代码块右上角的“复制”，会自动去掉 <code>$</code> 提示符），
     每章末尾还有「动手练习」。</li>
   <li><strong>看图。</strong>Docker 的很多概念（分层、网络、卷）用文字解释很抽象，画出来一眼就懂。每张图都值得停下来多看几秒。</li>
