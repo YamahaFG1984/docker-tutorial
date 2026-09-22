@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 19 章 · CI/CD 流水线 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="19">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 19 章</span>
+<h1>CI/CD 流水线</h1>
+<p class="lede">
+  到目前为止，镜像都是在你自己电脑上 <code>docker build</code>、<code>docker push</code> 的。在团队里，这件事应该交给机器：
+  <strong>每次推送代码，自动构建镜像、跑测试、扫描漏洞、打上正确的标签、推送到仓库并签名</strong>。
+  本章用 GitHub Actions 一步步搭出这条流水线，把第 6、8、16 章学到的知识串起来。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解一条镜像流水线由哪些环节组成，以及为什么要按这个顺序</li>
+    <li>用 Docker 官方的 GitHub Actions 构建并推送镜像到 GHCR 或 Docker Hub</li>
+    <li>用 metadata-action 根据分支、PR、版本号自动生成标签</li>
+    <li>用 GitHub Actions 缓存让构建提速</li>
+    <li>在流水线里跑测试、做漏洞扫描、构建多架构镜像</li>
+    <li>生成 SBOM 和来源证明，并用 Cosign 无密钥签名</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="pipeline">一条镜像流水线长什么样</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="镜像 CI/CD 流水线的各个阶段">
+  <rect class="bx-b" x="10" y="30" width="110" height="60" rx="10"/>
+  <text class="ttl on-b" x="65" y="56" text-anchor="middle">git push</text>
+  <text class="sm" x="65" y="76" text-anchor="middle">或开 PR / 打 tag</text>
+  <path class="ln" d="M122 60 H136" marker-end="url(#ar)"/>
+  <rect class="bx" x="140" y="30" width="110" height="60" rx="10"/>
+  <text class="ttl" x="195" y="56" text-anchor="middle">① 准备</text>
+  <text class="sm" x="195" y="76" text-anchor="middle">检出 · Buildx · 登录</text>
+  <path class="ln" d="M252 60 H266" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="270" y="30" width="110" height="60" rx="10"/>
+  <text class="ttl on-p" x="325" y="56" text-anchor="middle">② 算标签</text>
+  <text class="sm" x="325" y="76" text-anchor="middle">metadata-action</text>
+  <path class="ln" d="M382 60 H396" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="400" y="30" width="110" height="60" rx="10"/>
+  <text class="ttl on-a" x="455" y="56" text-anchor="middle">③ 构建</text>
+  <text class="sm" x="455" y="76" text-anchor="middle">带缓存 · 多架构</text>
+  <path class="ln" d="M512 60 H526" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="530" y="30" width="110" height="60" rx="10"/>
+  <text class="ttl on-g" x="585" y="56" text-anchor="middle">④ 测试</text>
+  <text class="sm" x="585" y="76" text-anchor="middle">在容器里跑</text>
+  <path class="ln" d="M642 60 H656" marker-end="url(#ar)"/>
+  <rect class="bx-r" x="660" y="30" width="90" height="60" rx="10"/>
+  <text class="ttl on-r" x="705" y="56" text-anchor="middle">⑤ 扫描</text>
+  <text class="sm" x="705" y="76" text-anchor="middle">有高危就失败</text>
+
+  <path class="ln" d="M705 92 V130 H585 V146" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="530" y="150" width="110" height="60" rx="10"/>
+  <text class="ttl on-a" x="585" y="176" text-anchor="middle">⑥ 推送</text>
+  <text class="sm" x="585" y="196" text-anchor="middle">+ SBOM + 来源证明</text>
+  <path class="ln" d="M528 180 H514" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="400" y="150" width="110" height="60" rx="10"/>
+  <text class="ttl on-p" x="455" y="176" text-anchor="middle">⑦ 签名</text>
+  <text class="sm" x="455" y="196" text-anchor="middle">Cosign 无密钥</text>
+  <path class="ln" d="M398 180 H384" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="270" y="150" width="110" height="60" rx="10"/>
+  <text class="ttl on-g" x="325" y="176" text-anchor="middle">⑧ 部署</text>
+  <text class="sm" x="325" y="196" text-anchor="middle">拉取新镜像</text>
+
+  <rect class="bx-d" x="10" y="236" width="740" height="46" rx="10"/>
+  <text class="lbl" x="380" y="256" text-anchor="middle">PR：只走 ①–⑤，验证能构建、测试通过、没有高危漏洞，但不推送</text>
+  <text class="lbl" x="380" y="274" text-anchor="middle">合并到 main / 打版本 tag：走完整条流水线</text>
+</svg>
+<figcaption>图 19-1　一条典型的镜像流水线</figcaption>
+</figure>
+
+<p>
+  我们用 <strong>GitHub Actions</strong> 来实现，因为它和代码仓库集成最紧密，Docker 官方也维护了一整套 action。
+  思路同样适用于 GitLab CI、Jenkins 等其他平台 —— 本质上都是在 CI 机器上执行第 8 章的 <code>docker buildx build</code>。
+</p>
+
+<h3>Docker 官方 action 一览</h3>
+
+<div class="tw"><table>
+  <tr><th>Action</th><th>作用</th><th>对应的本地命令</th></tr>
+  <tr><td><code>docker/setup-buildx-action@v4</code></td><td>创建 Buildx 构建器（docker-container 驱动）</td><td><code>docker buildx create --use</code></td></tr>
+  <tr><td><code>docker/setup-qemu-action@v4</code></td><td>安装 QEMU，用于构建其他架构的镜像</td><td>—</td></tr>
+  <tr><td><code>docker/login-action@v4</code></td><td>登录镜像仓库</td><td><code>docker login</code></td></tr>
+  <tr><td><code>docker/metadata-action@v6</code></td><td>根据 Git 事件生成镜像标签和 OCI 标签</td><td>手动 <code>docker tag</code></td></tr>
+  <tr><td><code>docker/build-push-action@v7</code></td><td>构建（并可选推送）镜像</td><td><code>docker buildx build --push</code></td></tr>
+</table></div>
+
+<div class="box note">
+  <div class="t">&#9432; 版本号</div>
+  <p>上表是 2026 年 9 月的最新主版本。这些 action 升级很频繁，写工作流时去各自的 GitHub 页面确认最新版本即可，用法基本不变。</p>
+</div>
+
+<h2 id="first">第一个工作流：构建并推送到 GHCR</h2>
+
+<p>
+  <strong>GitHub Container Registry（ghcr.io）</strong>是最省事的选择：不用额外注册账号，工作流自带的 <code>GITHUB_TOKEN</code> 就能推送，镜像会显示在仓库的 Packages 里。
+  在仓库里新建 <code>.github/workflows/docker.yml</code>：
+</p>
+
+<div class="code" data-lang="yaml" data-file=".github/workflows/docker.yml（最小版）">
+<pre>
+name: docker
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write                # 允许 GITHUB_TOKEN 推送到 ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}:latest
+</pre>
+</div>
+
+<p>推送到 main 之后，在仓库的 <strong>Actions</strong> 页面能看到运行过程；成功后镜像就能拉取了：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker pull ghcr.io/你的用户名/你的仓库:latest
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 推送到 Docker Hub</div>
+  <p>
+    在 Docker Hub 的 Account settings → Personal access tokens 创建一个令牌，保存为仓库的 Secret <code>DOCKERHUB_TOKEN</code>，用户名保存为变量 <code>DOCKERHUB_USERNAME</code>。
+    登录步骤改成 <code>username: ${{ vars.DOCKERHUB_USERNAME }}</code>、<code>password: ${{ secrets.DOCKERHUB_TOKEN }}</code>，去掉 <code>registry</code>，标签写成 <code>用户名/仓库名:标签</code>。
+    <strong>永远用访问令牌，不要用账号密码。</strong>
+  </p>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 注意 checkout 这一步</div>
+  <p>
+    build-push-action 默认使用 <strong>Git 上下文</strong>（直接从仓库的提交构建），这种情况下之前步骤对文件的修改都会被忽略。
+    我们先 <code>actions/checkout</code> 再指定 <code>context: .</code>，用的是<strong>工作目录上下文</strong>，<code>.dockerignore</code> 和前面步骤生成的文件都会生效，行为和你本地构建一致。
+  </p>
+</div>
+
+<h2 id="tags">自动生成标签</h2>
+
+<p>
+  只打 <code>latest</code> 是远远不够的（第 6 章讲过它的问题）。好的做法是让每个镜像都能追溯到来源：
+  来自哪个分支、哪个 PR、哪个版本号、哪个提交。<code>docker/metadata-action</code> 会根据触发事件自动算出这些标签：
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="不同 Git 事件生成的镜像标签">
+  <text class="lbl" x="130" y="24" text-anchor="middle">Git 事件</text>
+  <text class="lbl" x="520" y="24" text-anchor="middle">生成的镜像标签</text>
+  <rect class="bx-b" x="20" y="40" width="220" height="44" rx="8"/><text class="mono on-b" x="130" y="67" text-anchor="middle">push 到 main</text>
+  <rect class="bx-p" x="20" y="100" width="220" height="44" rx="8"/><text class="mono on-p" x="130" y="127" text-anchor="middle">PR #42</text>
+  <rect class="bx-a" x="20" y="160" width="220" height="44" rx="8"/><text class="mono on-a" x="130" y="187" text-anchor="middle">打 tag v1.4.2</text>
+  <path class="ln" d="M242 62 H316" marker-end="url(#ar)"/>
+  <path class="ln" d="M242 122 H316" marker-end="url(#ar)"/>
+  <path class="ln" d="M242 182 H316" marker-end="url(#ar)"/>
+  <rect class="bx" x="320" y="40" width="420" height="44" rx="8"/><text class="mono" x="340" y="67">:main   :sha-3f2a9c1</text>
+  <rect class="bx" x="320" y="100" width="420" height="44" rx="8"/><text class="mono" x="340" y="127">:pr-42   :sha-8b17e0d</text>
+  <rect class="bx" x="320" y="160" width="420" height="44" rx="8"/><text class="mono" x="340" y="187">:1.4.2   :1.4   :latest   :sha-c91d4e2</text>
+  <text class="lbl" x="380" y="238" text-anchor="middle">sha 标签让任何一个镜像都能精确对应到一次提交；semver 标签让用户可以选择“跟随 1.4.x 的补丁更新”</text>
+  <text class="sm" x="380" y="258" text-anchor="middle">打 semver tag 时 metadata-action 默认还会加上 latest</text>
+</svg>
+<figcaption>图 19-2　metadata-action 的标签规则</figcaption>
+</figure>
+
+<p>它同时生成符合 OCI 规范的镜像标签（labels），比如 <code>org.opencontainers.image.source</code>（源码仓库）、<code>revision</code>（提交 SHA）、<code>created</code>（构建时间），用 <code>docker inspect</code> 就能看到镜像从哪里来。</p>
+
+<h2 id="cache">构建缓存：让 CI 快起来</h2>
+
+<p>
+  CI 机器每次都是全新的，第 8 章讲的本地构建缓存在这里<strong>根本不存在</strong> —— 每次都从零下载依赖，一个 Node 项目可能要构建好几分钟。
+  解决办法是把 BuildKit 的缓存导出到外部，下次再导入：
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="GitHub Actions 缓存在多次运行之间保存构建缓存">
+  <rect class="bx" x="20" y="30" width="210" height="130" rx="12"/>
+  <text class="ttl" x="125" y="56" text-anchor="middle">第 1 次运行</text>
+  <text class="sm" x="125" y="80" text-anchor="middle">没有缓存，完整构建</text>
+  <text class="mono on-r" x="125" y="104" text-anchor="middle">4 分 12 秒</text>
+  <text class="sm" x="125" y="132" text-anchor="middle">结束时导出缓存 →</text>
+  <rect class="bx-p" x="275" y="60" width="210" height="80" rx="12"/>
+  <text class="ttl on-p" x="380" y="88" text-anchor="middle">GitHub Actions 缓存</text>
+  <text class="mono" x="380" y="112" text-anchor="middle">type=gha</text>
+  <rect class="bx-g" x="530" y="30" width="210" height="130" rx="12"/>
+  <text class="ttl on-g" x="635" y="56" text-anchor="middle">第 2 次运行</text>
+  <text class="sm" x="635" y="80" text-anchor="middle">只改了业务代码</text>
+  <text class="mono on-g" x="635" y="104" text-anchor="middle">38 秒</text>
+  <text class="sm" x="635" y="132" text-anchor="middle">依赖层全部命中缓存</text>
+  <path class="ln-p" d="M232 110 H271" marker-end="url(#ar-p)"/>
+  <path class="ln-p" d="M487 110 H526" marker-end="url(#ar-p)"/>
+  <text class="lbl" x="380" y="194" text-anchor="middle">mode=max：连多阶段构建的中间阶段也缓存（默认 min 只缓存最终镜像的层）</text>
+  <text class="sm" x="380" y="214" text-anchor="middle">时间数字仅作示意；前提是 Dockerfile 已按第 8 章图 8-7 的顺序组织</text>
+</svg>
+<figcaption>图 19-3　用 GitHub Actions 缓存跨运行复用构建缓存</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>缓存后端</th><th>写法</th><th>适合</th></tr>
+  <tr><td>GitHub Actions 缓存</td><td><code>type=gha</code></td><td>GitHub Actions，最简单，有容量上限（超出会淘汰旧缓存）</td></tr>
+  <tr><td>镜像仓库</td><td><code>type=registry,ref=ghcr.io/x/app:buildcache</code></td><td>任何 CI；缓存较大时；多个仓库或流水线共享缓存</td></tr>
+  <tr><td>Docker Build Cloud</td><td>用 cloud 驱动的构建器</td><td>团队共享缓存 + 原生多架构，付费</td></tr>
+</table></div>
+
+<div class="box warn">
+  <div class="t">&#9888; 只读权限下写缓存会失败</div>
+  <p>来自 fork 的 PR 等只有只读权限的运行，写入 gha 缓存可能报 <code>failed to reserve cache</code>。官方建议：这类运行只保留 <code>cache-from</code>，由 main 分支的 push 负责写缓存；或者给 <code>cache-to</code> 加上 <code>ignore-error=true</code>。</p>
+</div>
+
+<h2 id="pr">PR 构建：验证但不推送</h2>
+
+<p>PR 阶段的目的是“这次改动能不能构建、测试能不能过”，不应该往仓库推镜像（尤其是来自 fork 的 PR 拿不到写权限）。一个 <code>push</code> 条件就能搞定：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+# ...
+
+      - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request'     # PR 不登录
+        # ...
+
+      - uses: docker/build-push-action@v7
+        with:
+          push: ${{ github.event_name != 'pull_request' }}   # PR 只构建不推送
+          # ...
+</pre>
+</div>
+
+<h2 id="test">在流水线里跑测试</h2>
+
+<p>第 18 章的 Dockerfile 有 <code>dev</code> 和 <code>prod</code> 两个目标。可以再加一个 <code>test</code> 目标，让测试在和生产相同的基础镜像里运行：</p>
+
+<div class="code" data-lang="dockerfile" data-file="Dockerfile（追加 test 目标）">
+<pre>
+FROM dev AS test
+RUN npm test          # 测试失败 → 这一步失败 → 整个构建失败
+</pre>
+</div>
+
+<p>流水线里先构建 test 目标，通过了再构建并推送 prod 目标。两次构建共享同一个缓存，重复的层不会重新构建：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+      - name: 运行测试
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 构建并推送生产镜像
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: prod
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 需要数据库的集成测试</div>
+  <p>
+    集成测试要连真实的 Postgres？直接复用第 18 章的 Compose 文件：
+    <code>docker compose run --rm --build api npm run test:integration</code>，Compose 会先启动 db、等待健康检查通过，再运行测试。
+    跑完用 <code>docker compose down -v</code> 清理。GitHub 托管的 Ubuntu 运行器已经预装了 Docker 和 Compose。
+  </p>
+</div>
+
+<h2 id="scan">漏洞扫描：把关质量门</h2>
+
+<p>第 16 章讲了漏洞扫描，在 CI 里它变成了一道<strong>质量门</strong>：发现严重漏洞就让构建失败，有问题的镜像根本到不了仓库。</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+      - name: 构建镜像并载入本地（先不推送）
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: prod
+          load: true
+          tags: app:scan
+          cache-from: type=gha
+
+      - name: 扫描漏洞
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: app:scan
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true         # 暂时没有修复版本的漏洞先不阻断
+          exit-code: "1"               # 发现漏洞时让这一步失败
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 180" role="img" aria-label="漏洞扫描作为质量门">
+  <rect class="bx-a" x="20" y="50" width="150" height="70" rx="10"/>
+  <text class="ttl on-a" x="95" y="80" text-anchor="middle">构建完成</text>
+  <text class="mono" x="95" y="100" text-anchor="middle">load: true</text>
+  <path class="ln" d="M172 85 H236" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="240" y="40" width="180" height="90" rx="45"/>
+  <text class="ttl on-p" x="330" y="80" text-anchor="middle">扫描</text>
+  <text class="sm" x="330" y="100" text-anchor="middle">有可修复的高危漏洞？</text>
+  <path class="ln-g" d="M422 70 L520 40" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="470" y="44" text-anchor="middle">没有</text>
+  <path class="ln-r" d="M422 100 L520 130" marker-end="url(#ar-r)"/>
+  <text class="sm on-r" x="470" y="138" text-anchor="middle">有</text>
+  <rect class="bx-g" x="525" y="14" width="215" height="54" rx="10"/>
+  <text class="ttl on-g" x="632" y="38" text-anchor="middle">继续：推送、签名</text>
+  <text class="sm" x="632" y="56" text-anchor="middle">镜像进入仓库</text>
+  <rect class="bx-r" x="525" y="104" width="215" height="54" rx="10"/>
+  <text class="ttl on-r" x="632" y="128" text-anchor="middle">构建失败 ✗</text>
+  <text class="sm" x="632" y="146" text-anchor="middle">升级依赖或基础镜像后重试</text>
+</svg>
+<figcaption>图 19-4　扫描作为推送前的质量门</figcaption>
+</figure>
+
+<p>
+  也可以用 Docker 官方的 <code>docker/scout-action</code>，它能直接和上一个版本或基础镜像做对比，把结果评论到 PR 里（需要 Docker 账号登录）。
+  无论用哪个工具，都建议配合 Dependabot / Renovate 自动提交基础镜像和依赖的升级 PR —— 大多数漏洞只要升级基础镜像就能修复。
+</p>
+
+<h2 id="multiarch">多架构构建</h2>
+
+<p>团队里有人用 M 系列 Mac，服务器是 x86，还有 ARM 云主机？在 CI 里一次性构建多架构镜像（原理见第 6 章 manifest list、第 8 章多架构构建）：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; QEMU 太慢怎么办</div>
+  <p>
+    用 QEMU 模拟 ARM 构建，编译型项目可能慢好几倍。GitHub 提供了原生 ARM 运行器（<code>runs-on: ubuntu-24.04-arm</code>），
+    可以用矩阵在 amd64 和 arm64 运行器上分别原生构建，再合并成一个 manifest list（官方文档 “Distribute build across multiple runners” 有完整示例）；或者使用 Docker Build Cloud。
+  </p>
+</div>
+
+<h2 id="supply-chain">SBOM、来源证明与签名</h2>
+
+<h3>证明（attestations）</h3>
+
+<p>
+  第 16 章提到，BuildKit 可以在构建时生成两类<strong>证明</strong>并随镜像一起推送：<strong>SBOM</strong>（镜像里有哪些软件）和<strong>来源证明 provenance</strong>（镜像是在哪里、用什么源码、怎样构建的）。
+  build-push-action 默认就会添加来源证明（公开仓库为 <code>mode=max</code>，私有仓库为 <code>mode=min</code>），SBOM 需要显式打开：
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+      - uses: docker/build-push-action@v7
+        with:
+          # ...
+          sbom: true
+          provenance: mode=max
+</pre>
+</div>
+
+<div class="code" data-lang="bash">
+<pre>
+# 查看推送后镜像附带的 SBOM
+$ docker buildx imagetools inspect ghcr.io/you/app:main --format '{{json .SBOM}}'
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 不要把机密当作构建参数</div>
+  <p><code>mode=max</code> 的来源证明会记录构建参数。如果你用 <code>build-args</code> 传了令牌，它会被写进公开的证明里！构建期机密一律用 <code>secrets:</code> 输入（对应 Dockerfile 中的 <code>RUN --mount=type=secret</code>）。</p>
+</div>
+
+<h3>用 Cosign 无密钥签名</h3>
+
+<p>
+  在 CI 里签名最推荐<strong>无密钥（keyless）</strong>方式：Cosign 用 GitHub Actions 的 OIDC 身份向 Sigstore 申请一张短期证书完成签名，签名记录在公开的透明日志里。
+  你不需要生成、保管、轮换任何私钥，验证方只需要检查“这个镜像是不是由某仓库的某个工作流签的”。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="Cosign 无密钥签名流程">
+  <rect class="bx-b" x="20" y="40" width="190" height="90" rx="12"/>
+  <text class="ttl on-b" x="115" y="66" text-anchor="middle">GitHub Actions</text>
+  <text class="sm" x="115" y="88" text-anchor="middle">工作流拥有 OIDC 身份</text>
+  <text class="mono" x="115" y="110" text-anchor="middle" style="font-size:10.5px">id-token: write</text>
+  <path class="ln-a" d="M212 70 H296" marker-end="url(#ar-a)"/>
+  <text class="sm" x="254" y="62" text-anchor="middle">① 身份令牌</text>
+  <rect class="bx-p" x="300" y="30" width="170" height="80" rx="12"/>
+  <text class="ttl on-p" x="385" y="58" text-anchor="middle">Sigstore</text>
+  <text class="sm" x="385" y="80" text-anchor="middle">签发短期证书</text>
+  <text class="sm" x="385" y="98" text-anchor="middle">写入透明日志</text>
+  <path class="ln-a" d="M300 96 H214" marker-end="url(#ar-a)"/>
+  <text class="sm" x="254" y="112" text-anchor="middle">② 证书</text>
+  <path class="ln-a" d="M115 132 V176 H516" marker-end="url(#ar-a)"/>
+  <text class="sm" x="300" y="168" text-anchor="middle">③ 对镜像摘要签名，签名推送到仓库</text>
+  <rect class="bx-a" x="520" y="150" width="220" height="60" rx="12"/>
+  <text class="ttl on-a" x="630" y="174" text-anchor="middle">ghcr.io</text>
+  <text class="sm" x="630" y="194" text-anchor="middle">镜像 + 签名 + SBOM + 证明</text>
+  <rect class="bx-g" x="520" y="30" width="220" height="80" rx="12"/>
+  <text class="ttl on-g" x="630" y="58" text-anchor="middle">使用者 / 部署系统</text>
+  <text class="mono" x="630" y="80" text-anchor="middle">cosign verify</text>
+  <text class="sm" x="630" y="98" text-anchor="middle">检查签名者身份</text>
+  <path class="ln-g" d="M630 148 V114" marker-end="url(#ar-g)"/>
+  <text class="lbl" x="380" y="238" text-anchor="middle">全程没有需要保管的私钥：身份就是“哪个仓库的哪个工作流”</text>
+</svg>
+<figcaption>图 19-5　Cosign 无密钥签名</figcaption>
+</figure>
+
+<div class="code" data-lang="yaml">
+<pre>
+permissions:
+  contents: read
+  packages: write
+  id-token: write                          # 允许获取 OIDC 身份令牌，签名需要
+
+# ...
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          # ...
+          push: true
+
+      - uses: sigstore/cosign-installer@v4
+
+      - name: 签名镜像
+        if: github.event_name != 'pull_request'
+        run: cosign sign --yes ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+</pre>
+</div>
+
+<p>注意签名的对象是<strong>摘要</strong>（<code>steps.build.outputs.digest</code>），而不是标签 —— 标签可以被移动，摘要不会（第 6 章）。验证时指定签名者身份：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ cosign verify ghcr.io/you/app:main \
+    --certificate-identity-regexp 'https://github.com/you/app/.github/workflows/.*' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+</pre>
+</div>
+
+<h2 id="full">完整工作流</h2>
+
+<p>把前面的内容组合起来，就是一条可以直接用于真实项目的流水线：</p>
+
+<div class="code" data-lang="yaml" data-file=".github/workflows/docker.yml（完整版）">
+<pre>
+name: docker
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+
+      # 1. 测试：构建 test 目标，失败即停止
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      # 2. 构建生产镜像并载入本地，用于扫描
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: prod
+          load: true
+          tags: app:scan
+          cache-from: type=gha
+
+      # 3. 质量门：有可修复的高危漏洞就失败
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: app:scan
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # 4. 多架构构建并推送（PR 只构建不推送），附带 SBOM 和来源证明
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: prod
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+
+      # 5. 无密钥签名
+      - uses: sigstore/cosign-installer@v4
+        if: github.event_name != 'pull_request'
+      - if: github.event_name != 'pull_request'
+        run: cosign sign --yes ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+</pre>
+</div>
+
+<h2 id="deploy">部署：最后一公里</h2>
+
+<p>镜像推送到仓库之后，怎么让服务器用上新版本？常见的几种方式，由简到繁：</p>
+
+<div class="tw"><table>
+  <tr><th>方式</th><th>做法</th><th>适合</th></tr>
+  <tr><td>SSH + Compose</td><td>流水线最后一步 SSH 到服务器，执行 <code>docker compose pull &amp;&amp; docker compose up -d</code></td><td>单台服务器、小项目</td></tr>
+  <tr><td>Swarm</td><td><code>docker stack deploy</code> 或 <code>docker service update --image</code>，自动滚动更新（第 12 章）</td><td>几台服务器的小集群</td></tr>
+  <tr><td>Kubernetes + GitOps</td><td>流水线只负责更新配置仓库里的镜像版本，由 Argo CD / Flux 自动同步到集群</td><td>中大型团队</td></tr>
+  <tr><td>托管平台</td><td>Cloud Run、ECS、Azure Container Apps、Fly.io 等，直接指定镜像地址部署</td><td>不想管服务器</td></tr>
+</table></div>
+
+<div class="box key">
+  <div class="t">&#9733; 部署时用摘要，而不是标签</div>
+  <p>
+    生产环境部署 <code>app:main</code>，你没法确定跑的到底是哪次构建。部署清单里写 <code>app@sha256:…</code>（或者 <code>sha-3f2a9c1</code> 这种不会被覆盖的标签），
+    回滚时换回上一个摘要即可。再配合 <code>cosign verify</code> 或 Kubernetes 的准入策略，只允许运行你的流水线签过名的镜像。
+  </p>
+</div>
+
+<h2 id="security">流水线自身的安全</h2>
+
+<p>CI 流水线手握仓库写权限和各种凭据，本身就是攻击者的重要目标：</p>
+
+<ul>
+  <li><strong>最小权限：</strong>在工作流顶部显式声明 <code>permissions</code>，只给需要的权限（如本章的 <code>contents: read</code>、<code>packages: write</code>、<code>id-token: write</code>）。</li>
+  <li><strong>固定第三方 action 的版本：</strong>标签可以被移动（和镜像标签一样！），安全要求高的项目把 action 固定到完整的 commit SHA，例如 <code>uses: docker/build-push-action@&lt;40 位 SHA&gt; # v7.4.0</code>，并让 Dependabot 帮你更新。</li>
+  <li><strong>凭据用 Secrets，令牌用最小作用域：</strong>Docker Hub 令牌只给“读写”而非“管理员”；能用 <code>GITHUB_TOKEN</code> 或 OIDC 就不用长期令牌。</li>
+  <li><strong>小心 <code>pull_request_target</code>：</strong>它会在有写权限的上下文里运行，绝不要在其中构建或执行来自 fork 的代码。</li>
+</ul>
+
+<h2 id="troubleshoot">CI 中的常见问题</h2>
+
+<div class="tw"><table>
+  <tr><th>现象</th><th>原因与解决</th></tr>
+  <tr><td><code>denied: permission_denied</code> 推送到 ghcr.io 失败</td><td>缺少 <code>packages: write</code> 权限；或者仓库设置里的 Actions 权限被限制为只读</td></tr>
+  <tr><td>本地能构建，CI 里 <code>COPY</code> 找不到文件</td><td>文件在 <code>.gitignore</code> 里，根本没提交到仓库；或者用了 Git 上下文却依赖前面步骤生成的文件</td></tr>
+  <tr><td>每次都完整构建，缓存没生效</td><td>没配置 <code>cache-from</code> / <code>cache-to</code>；Dockerfile 在很靠前的位置 <code>COPY . .</code>；或者缓存超出容量被淘汰</td></tr>
+  <tr><td>arm64 构建非常慢</td><td>QEMU 模拟。改用原生 ARM 运行器或 Build Cloud</td></tr>
+  <tr><td><code>toomanyrequests</code> 拉取基础镜像失败</td><td>Docker Hub 匿名拉取限流。在构建前 <code>docker/login-action</code> 登录 Docker Hub</td></tr>
+  <tr><td>看不清构建到底哪里错了</td><td>展开失败步骤的日志；构建摘要（job summary）里有 Docker 构建的详细报告，也可以下载构建记录用 Docker Desktop 打开</td></tr>
+</table></div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>镜像流水线的典型顺序：准备 → 算标签 → 构建 → 测试 → 扫描 → 推送 → 签名 → 部署；PR 只走到扫描为止。</li>
+  <li>Docker 官方的 setup-buildx、login、metadata、build-push 几个 action 覆盖了绝大部分需求。</li>
+  <li>metadata-action 按分支、PR、版本号、提交自动生成标签，让每个镜像都可追溯。</li>
+  <li>CI 机器没有本地缓存，用 <code>type=gha</code> 或仓库缓存把 BuildKit 缓存持久化下来。</li>
+  <li>测试可以作为 Dockerfile 的一个构建目标；漏洞扫描作为推送前的质量门。</li>
+  <li>开启 SBOM 和来源证明，用 Cosign 对摘要做无密钥签名；部署时用摘要并验证签名。</li>
+  <li>流水线本身也要安全：最小权限、固定 action 版本、谨慎处理 fork 的 PR。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>把第 18 章的 todo 项目推到一个 GitHub 仓库，加上本章的最小工作流，确认镜像出现在仓库的 Packages 里并能 <code>docker pull</code>。</li>
+    <li>加入 metadata-action，分别推送到 main、开一个 PR、打一个 <code>v0.1.0</code> 的 tag，观察生成了哪些镜像标签。</li>
+    <li>加上 <code>type=gha</code> 缓存，对比第一次和第二次运行的构建耗时。</li>
+    <li>故意把基础镜像换成一个很老的版本（如 <code>node:16-alpine</code>），看看 Trivy 质量门是否拦住了它。</li>
+    <li>完成签名步骤后，在本地用 <code>cosign verify</code> 验证你的镜像；再试试把 <code>--certificate-identity-regexp</code> 改成别人的仓库，确认验证会失败。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

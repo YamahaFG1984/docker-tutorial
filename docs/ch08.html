@@ -1,0 +1,844 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 8 章 · 应用容器化 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="8">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 8 章</span>
+<h1>应用容器化</h1>
+<p class="lede">
+  Docker 让“把应用打包成镜像、再作为容器运行”变得非常简单，这个过程叫<strong>容器化（containerization）</strong>。
+  本章完整走一遍：写 Dockerfile、构建镜像、推送到 Docker Hub、运行；然后学习生产级技巧 —— 多阶段构建、构建缓存、多架构构建，以及一系列最佳实践。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>掌握容器化的五个步骤</li>
+    <li>读懂 Dockerfile 的常用指令，知道哪些指令产生层、哪些只产生元数据</li>
+    <li>理解构建上下文和 <code>.dockerignore</code></li>
+    <li>用 <code>docker tag</code> / <code>docker push</code> 把镜像推送到仓库</li>
+    <li>用多阶段构建把镜像从几百 MB 压到几 MB</li>
+    <li>理解 Buildx、BuildKit、构建器和多架构构建</li>
+    <li>写出能充分利用构建缓存、安全又精简的 Dockerfile</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="tldr">容器化的五个步骤</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="容器化应用的五个步骤">
+  <rect class="bx" x="10" y="40" width="136" height="80" rx="10"/>
+  <text class="ttl" x="78" y="66" text-anchor="middle">① 写代码</text><text class="sm" x="78" y="88" text-anchor="middle">应用 + 依赖清单</text><text class="sm" x="78" y="104" text-anchor="middle">package.json 等</text>
+  <rect class="bx-p" x="162" y="40" width="136" height="80" rx="10"/>
+  <text class="ttl on-p" x="230" y="66" text-anchor="middle">② Dockerfile</text><text class="sm" x="230" y="88" text-anchor="middle">告诉 Docker 如何</text><text class="sm" x="230" y="104" text-anchor="middle">构建和运行</text>
+  <rect class="bx-b" x="314" y="40" width="136" height="80" rx="10"/>
+  <text class="ttl on-b" x="382" y="66" text-anchor="middle">③ 构建</text><text class="mono" x="382" y="90" text-anchor="middle">docker build</text><text class="sm" x="382" y="108" text-anchor="middle">得到镜像</text>
+  <rect class="bx-a" x="466" y="40" width="136" height="80" rx="10"/>
+  <text class="ttl on-a" x="534" y="66" text-anchor="middle">④ 推送（可选）</text><text class="mono" x="534" y="90" text-anchor="middle">docker push</text><text class="sm" x="534" y="108" text-anchor="middle">存到仓库</text>
+  <rect class="bx-g" x="618" y="40" width="132" height="80" rx="10"/>
+  <text class="ttl on-g" x="684" y="66" text-anchor="middle">⑤ 运行</text><text class="mono" x="684" y="90" text-anchor="middle">docker run</text><text class="sm" x="684" y="108" text-anchor="middle">得到容器</text>
+  <path class="ln" d="M148 80 H158" marker-end="url(#ar)"/>
+  <path class="ln" d="M300 80 H310" marker-end="url(#ar)"/>
+  <path class="ln" d="M452 80 H462" marker-end="url(#ar)"/>
+  <path class="ln" d="M604 80 H614" marker-end="url(#ar)"/>
+  <text class="lbl" x="380" y="152" text-anchor="middle">Docker 的目标：让构建（Build）、分享（Share）、运行（Run）应用变得简单</text>
+</svg>
+<figcaption>图 8-1　容器化应用的基本流程</figcaption>
+</figure>
+
+<h2 id="single">容器化一个单容器应用</h2>
+
+<p>我们要容器化一个简单的 Node.js Web 应用，它在 8080 端口提供一个网页。</p>
+
+<h3>获取应用代码</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+$ git clone https://github.com/nigelpoulton/ddd-book.git
+$ cd ddd-book/node-app
+$ ls -l
+-rw-r--r--    1 nigel  staff    341  app.js
+drwxr-xr-x  103 nigel  staff   3296  node_modules
+-rw-r--r--    1 nigel  staff  39975  package-lock.json
+-rw-r--r--    1 nigel  staff    355  package.json
+drwxr-xr-x    3 nigel  staff     96  views
+</pre>
+</div>
+
+<p>这个目录就是<strong>构建上下文（build context）</strong>，因为它包含了应用源代码和依赖清单。要容器化它，还缺一个 Dockerfile。</p>
+
+<h3>用 docker init 生成 Dockerfile</h3>
+
+<p>
+  以前 Dockerfile 都得手写。现在 Docker Desktop 带有 <code>docker init</code> 命令，它会分析你的项目，自动生成一套遵循最佳实践的
+  Dockerfile、<code>.dockerignore</code>、<code>compose.yaml</code> 和说明文档。在 <code>node-app</code> 目录下运行：
+</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker init
+Welcome to the Docker Init CLI!
+? What application platform does your project use? Node
+? What version of Node do you want to use? 22           &lt;&lt;---- 用更新的版本也可以
+? Which package manager do you want to use? npm
+? What command do you want to use to start the app? node app.js
+? What port does your server listen on? 8080
+CREATED: .dockerignore
+CREATED: Dockerfile
+CREATED: compose.yaml
+CREATED: README.Docker.md
+✔ Your Docker files are ready!
+</pre>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 没有 docker init？</div>
+  <p>纯 Docker Engine 安装可能没有 <code>docker init</code> 插件。没关系，仓库里有一个现成的 <code>sample-Dockerfile</code>，把它重命名为 <code>Dockerfile</code> 即可继续。</p>
+</div>
+
+<p>生成的 Dockerfile 类似这样（为了讲解加上了行号）：</p>
+
+<div class="code" data-lang="dockerfile" data-file="Dockerfile（docker init 生成）">
+<pre>
+# syntax=docker/dockerfile:1
+ARG NODE_VERSION=22
+FROM node:${NODE_VERSION}-alpine
+ENV NODE_ENV production
+WORKDIR /usr/src/app
+RUN --mount=type=bind,source=package.json,target=package.json \
+    --mount=type=bind,source=package-lock.json,target=package-lock.json \
+    --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev
+USER node
+COPY . .
+EXPOSE 8080
+CMD node app.js
+</pre>
+</div>
+
+<div class="tw"><table>
+  <tr><th>指令</th><th>作用</th></tr>
+  <tr><td><code># syntax=docker/dockerfile:1</code></td><td>告诉 BuildKit 使用最新的 Dockerfile 1.x 语法（可以用上 <code>--mount</code> 等新特性）</td></tr>
+  <tr><td><code>ARG</code> + <code>FROM</code></td><td>定义构建参数 <code>NODE_VERSION</code>，拉取 <code>node:22-alpine</code> 作为基础镜像</td></tr>
+  <tr><td><code>ENV NODE_ENV ...</code></td><td>让 Node 以生产模式运行（性能更好、日志更少）</td></tr>
+  <tr><td><code>WORKDIR</code></td><td>设置后续指令的工作目录：后面的 <code>RUN</code>、<code>COPY</code>、<code>CMD</code> 都在 <code>/usr/src/app</code> 里执行</td></tr>
+  <tr><td><code>RUN --mount=...</code></td><td>把依赖清单<strong>绑定挂载</strong>进来（不进入镜像层），并用<strong>缓存挂载</strong>保留 npm 缓存，然后 <code>npm ci --omit=dev</code> 只安装生产依赖</td></tr>
+  <tr><td><code>USER node</code></td><td>之后以非 root 用户 <code>node</code> 运行 —— 重要的安全实践</td></tr>
+  <tr><td><code>COPY . .</code></td><td>把构建上下文（第一个点）里的源代码复制到镜像的 WORKDIR（第二个点）</td></tr>
+  <tr><td><code>EXPOSE 8080</code></td><td>记录应用使用的端口（文档作用，不会真的打开端口）</td></tr>
+  <tr><td><code>CMD</code></td><td>容器启动时执行的命令</td></tr>
+</table></div>
+
+<h3>用构建检查把它变得更好</h3>
+
+<p>
+  BuildKit 内置了<strong>构建检查（build checks）</strong>，可以像代码 lint 一样检查 Dockerfile。试试看：
+</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker build --check .
+WARNING: LegacyKeyValueFormat - https://docs.docker.com/go/dockerfile/rule/legacy-key-value-format/
+"ENV key=value" should be used instead of legacy "ENV key value" format
+Dockerfile:4
+--------------------
+   4 | &gt;&gt;&gt; ENV NODE_ENV production
+
+WARNING: JSONArgsRecommended - https://docs.docker.com/go/dockerfile/rule/json-args-recommended/
+JSON arguments recommended for CMD to prevent unintended behavior related to OS signals
+Dockerfile:13
+--------------------
+  13 | &gt;&gt;&gt; CMD node app.js
+</pre>
+</div>
+
+<p>第二个警告尤其重要。<code>CMD</code> 有两种写法：</p>
+
+<div class="vs">
+  <div class="old"><div class="h">shell 形式（不推荐）</div>
+  <div class="code" data-lang="dockerfile"><pre>
+CMD node app.js
+# 实际执行：/bin/sh -c "node app.js"
+# PID 1 是 sh，不是 node
+# docker stop 的 SIGTERM 到不了 node
+</pre></div></div>
+  <div class="new"><div class="h">exec 形式（推荐）</div>
+  <div class="code" data-lang="dockerfile"><pre>
+CMD ["node", "app.js"]
+# 直接执行 node，没有 shell 包装
+# PID 1 就是 node
+# 能直接收到 SIGTERM，优雅退出
+</pre></div></div>
+</div>
+
+<p>回想第 7 章的信号知识就明白了。修正后的 Dockerfile：</p>
+
+<div class="code" data-lang="dockerfile" data-file="Dockerfile（修正版）">
+<pre>
+# syntax=docker/dockerfile:1
+ARG NODE_VERSION=22
+FROM node:${NODE_VERSION}-alpine
+ENV NODE_ENV=production
+WORKDIR /usr/src/app
+RUN --mount=type=bind,source=package.json,target=package.json \
+    --mount=type=bind,source=package-lock.json,target=package-lock.json \
+    --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev
+USER node
+COPY . .
+EXPOSE 8080
+CMD ["node", "app.js"]
+</pre>
+</div>
+
+<h3>构建镜像</h3>
+
+<p>运行下面的命令构建一个叫 <code>ddd-book:ch8.node</code> 的镜像。<strong>别忘了末尾的点</strong>，它表示用当前目录作为构建上下文：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker build -t ddd-book:ch8.node .
+[+] Building 16.2s (12/12) FINISHED
+ => [internal] load build definition from Dockerfile                  0.0s
+ => [internal] load .dockerignore                                     0.0s
+ => [stage-0 1/4] FROM docker.io/library/node:22-alpine               3.0s   &lt;&lt;---- 基础层
+ => [stage-0 2/4] WORKDIR /usr/src/app                                0.2s   &lt;&lt;---- 新层
+ => [stage-0 3/4] RUN --mount=type=bind,source=package.json...        1.1s   &lt;&lt;---- 新层
+ => [stage-0 4/4] COPY . .                                            0.1s   &lt;&lt;---- 新层
+ => exporting to image                                                0.2s
+ => => naming to docker.io/library/ddd-book:ch8.node                  0.0s
+
+$ docker images
+REPOSITORY   TAG         IMAGE ID       CREATED          SIZE
+ddd-book     ch8.node    24dd040fa06b   18 seconds ago   242MB
+</pre>
+</div>
+
+<p>恭喜，你已经把应用容器化成了一个 OCI 镜像！</p>
+
+<h3>构建上下文与 .dockerignore</h3>
+
+<p>那个末尾的点到底是什么意思？构建时，Buildx 客户端会把<strong>构建上下文</strong>（这个目录下的文件）发送给 BuildKit 构建器，Dockerfile 里的 <code>COPY</code> 只能复制上下文里的文件：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="构建上下文被发送给构建器，dockerignore 排除的文件不会发送">
+  <rect class="bx" x="20" y="20" width="280" height="200" rx="12"/>
+  <text class="ttl" x="40" y="44">构建上下文（当前目录 .）</text>
+  <rect class="bx-g" x="40" y="58" width="110" height="26" rx="5"/><text class="sm on-g" x="95" y="76" text-anchor="middle">app.js</text>
+  <rect class="bx-g" x="160" y="58" width="120" height="26" rx="5"/><text class="sm on-g" x="220" y="76" text-anchor="middle">package.json</text>
+  <rect class="bx-g" x="40" y="92" width="110" height="26" rx="5"/><text class="sm on-g" x="95" y="110" text-anchor="middle">views/</text>
+  <rect class="bx-g" x="160" y="92" width="120" height="26" rx="5"/><text class="sm on-g" x="220" y="110" text-anchor="middle">Dockerfile</text>
+  <rect class="bx-r" x="40" y="134" width="110" height="26" rx="5"/><text class="sm on-r" x="95" y="152" text-anchor="middle">node_modules/</text>
+  <rect class="bx-r" x="160" y="134" width="120" height="26" rx="5"/><text class="sm on-r" x="220" y="152" text-anchor="middle">.git/</text>
+  <rect class="bx-r" x="40" y="168" width="110" height="26" rx="5"/><text class="sm on-r" x="95" y="186" text-anchor="middle">.env</text>
+  <rect class="bx-r" x="160" y="168" width="120" height="26" rx="5"/><text class="sm on-r" x="220" y="186" text-anchor="middle">*.log</text>
+
+  <rect class="bx-p" x="330" y="120" width="140" height="80" rx="10"/>
+  <text class="ttl on-p" x="400" y="146" text-anchor="middle">.dockerignore</text>
+  <text class="sm" x="400" y="168" text-anchor="middle">红色的文件</text>
+  <text class="sm" x="400" y="184" text-anchor="middle">不发送</text>
+
+  <path class="ln-g" d="M302 80 H520" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="410" y="70" text-anchor="middle">只发送绿色的文件</text>
+  <rect class="bx-b" x="525" y="40" width="215" height="90" rx="12"/>
+  <text class="ttl on-b" x="632" y="68" text-anchor="middle">BuildKit 构建器</text>
+  <text class="sm" x="632" y="90" text-anchor="middle">执行 Dockerfile</text>
+  <text class="sm" x="632" y="108" text-anchor="middle">COPY 只能看到发来的文件</text>
+  <text class="lbl" x="632" y="170" text-anchor="middle">上下文越小，构建越快</text>
+  <text class="lbl" x="632" y="190" text-anchor="middle">也不会把密钥打进镜像</text>
+</svg>
+<figcaption>图 8-2　构建上下文与 .dockerignore</figcaption>
+</figure>
+
+<div class="code" data-lang="text" data-file=".dockerignore">
+<pre>
+node_modules
+.git
+.env
+*.log
+Dockerfile
+compose.yaml
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 一定要有 .dockerignore</div>
+  <p>
+    没有它，<code>COPY . .</code> 会把 <code>.git</code> 历史、本地的 <code>node_modules</code>（可能是给 macOS 编译的，放进 Linux 镜像会出错）、
+    甚至包含密码的 <code>.env</code> 文件统统复制进镜像。镜像一旦推送到公共仓库，里面的密钥就泄露了。
+  </p>
+</div>
+
+<h3>查看镜像的层</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker inspect ddd-book:ch8.node
+&lt;Snip&gt;
+        "ExposedPorts": { "8080/tcp": {} },
+        "WorkingDir": "/usr/src/app",
+        "Cmd": [ "node", "app.js" ],
+&lt;Snip&gt;
+        "Layers": [
+            "sha256:5f4d9fc4d98de91820d2a9c81e501c8cc6429bc8758b43fcb2cd50f4cab9a324",
+            "sha256:6b20c4e93dbab9786f96268bbe32c208d385f2c4490a278ad3b1e55cc79480e4",
+            "sha256:012c308a78ec993a47fdb7c4c6d17b53d8ce2649a463be28ae5c48ab1af2e039",
+            "sha256:35a839ac7cc922afd896a0297e692141c77ed6e03eff6a70db13bb23f6cd4f8f",
+            "sha256:918caa8070410ccfb2c5b3b4d62ca66742c46bf21fe0bd433738b7796c530e68",
+            "sha256:a48b3b3d0c5a693840e7e4abd7971f130b4447573483628bcb996091e1e8e8b8",
+            "sha256:ea2d4594dbbef4009441a33dd1dd4c5076d7fe09a171381a6b7583605569dd11"
+        ]
+</pre>
+</div>
+
+<p>只有 3 条指令创建了新层，为什么有 7 层？因为基础镜像 <code>node:22-alpine</code> 本身就有 4 层：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="Dockerfile 指令与镜像层的对应关系">
+  <text class="ttl" x="200" y="22" text-anchor="middle">Dockerfile</text>
+  <text class="ttl" x="590" y="22" text-anchor="middle">镜像</text>
+  <rect class="bx-a" x="40"  y="40"  width="320" height="26" rx="5"/><text class="mono on-a" x="52" y="58">FROM node:22-alpine</text>
+  <rect class="bx"   x="40"  y="72"  width="320" height="26" rx="5"/><text class="mono" x="52" y="90" style="fill:var(--fg-faint)">ENV NODE_ENV=production</text>
+  <rect class="bx-a" x="40"  y="104" width="320" height="26" rx="5"/><text class="mono on-a" x="52" y="122">WORKDIR /usr/src/app</text>
+  <rect class="bx-a" x="40"  y="136" width="320" height="26" rx="5"/><text class="mono on-a" x="52" y="154">RUN ... npm ci --omit=dev</text>
+  <rect class="bx"   x="40"  y="168" width="320" height="26" rx="5"/><text class="mono" x="52" y="186" style="fill:var(--fg-faint)">USER node</text>
+  <rect class="bx-a" x="40"  y="200" width="320" height="26" rx="5"/><text class="mono on-a" x="52" y="218">COPY . .</text>
+  <rect class="bx"   x="40"  y="232" width="320" height="26" rx="5"/><text class="mono" x="52" y="250" style="fill:var(--fg-faint)">EXPOSE 8080</text>
+  <rect class="bx"   x="40"  y="264" width="320" height="26" rx="5"/><text class="mono" x="52" y="282" style="fill:var(--fg-faint)">CMD ["node", "app.js"]</text>
+
+  <rect class="bx-g" x="470" y="40"  width="240" height="26" rx="5"/><text class="sm on-g" x="590" y="58" text-anchor="middle">层 7 · COPY 的应用代码</text>
+  <rect class="bx-g" x="470" y="72"  width="240" height="26" rx="5"/><text class="sm on-g" x="590" y="90" text-anchor="middle">层 6 · npm 依赖</text>
+  <rect class="bx-g" x="470" y="104" width="240" height="26" rx="5"/><text class="sm on-g" x="590" y="122" text-anchor="middle">层 5 · WORKDIR 目录</text>
+  <rect class="bx-b" x="470" y="136" width="240" height="110" rx="8"/>
+  <text class="sm on-b" x="590" y="166" text-anchor="middle">层 1–4</text>
+  <text class="sm on-b" x="590" y="186" text-anchor="middle">来自基础镜像 node:22-alpine</text>
+  <text class="sm on-b" x="590" y="206" text-anchor="middle">（Alpine + Node.js 运行时）</text>
+  <rect class="bx-d" x="470" y="256" width="240" height="40" rx="6"/>
+  <text class="sm" x="590" y="274" text-anchor="middle">config（元数据）：ENV、USER、</text>
+  <text class="sm" x="590" y="289" text-anchor="middle">EXPOSE、CMD、WORKDIR…</text>
+
+  <path class="ln-a" d="M362 53 L466 190" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M362 117 L466 117" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M362 149 L466 85" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M362 213 L466 53" marker-end="url(#ar-a)"/>
+  <path class="ln-d" d="M362 85 L466 270"/>
+  <path class="ln-d" d="M362 245 L466 276"/>
+  <text class="lbl" x="380" y="318" text-anchor="middle">橙色指令增加文件 → 创建新层；灰色指令只写元数据 → 不创建层</text>
+</svg>
+<figcaption>图 8-3　Dockerfile 指令与镜像层</figcaption>
+</figure>
+
+<h3>推送到 Docker Hub</h3>
+
+<p>
+  构建好的镜像通常要推送到仓库保存，并分享给同事和客户。这一步是可选的，需要一个 Docker Hub 账号（在 <a href="https://hub.docker.com">hub.docker.com</a> 免费注册）。
+</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker login
+USING WEB-BASED LOGIN
+Your one-time device confirmation code is: PNXK-SGJG
+Press ENTER to open your browser or submit your device code here: https://login.docker.com/activate
+Login Succeeded
+</pre>
+</div>
+
+<p>
+  推送前需要<strong>重新打标签</strong>，因为 Docker 根据镜像名来决定推到哪个仓库、哪个库。
+  现在的名字 <code>ddd-book:ch8.node</code> 会被推到 Docker Hub 顶层一个叫 <code>ddd-book</code> 的库，你没有权限，推送会失败。
+  用 <code>docker tag &lt;旧名&gt; &lt;新名&gt;</code> 加上你的 Docker ID（下面用作者的 ID 演示，请换成你自己的）：
+</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker tag ddd-book:ch8.node nigelpoulton/ddd-book:ch8.node
+$ docker images
+REPOSITORY              TAG        IMAGE ID       CREATED          SIZE
+nigelpoulton/ddd-book   ch8.node   24dd040fa06b   38 minutes ago   242MB
+ddd-book                ch8.node   24dd040fa06b   38 minutes ago   242MB
+$ docker push nigelpoulton/ddd-book:ch8.node
+The push refers to repository [docker.io/nigelpoulton/ddd-book]
+e4ef261755c8: Pushed
+2a2799ae89a2: Mounted from library/node        &lt;&lt;---- 仓库里已有的层直接复用
+&lt;Snip&gt;
+ch8.node: digest: sha256:24dd040fa06baf...1f7f862963527a size: 856
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="Docker 根据镜像名决定推送目的地">
+  <text class="mono" x="380" y="50" text-anchor="middle" style="font-size:22px"><tspan style="fill:var(--fg-faint)">(docker.io/)</tspan><tspan style="fill:var(--green)">nigelpoulton</tspan><tspan style="fill:var(--fg-faint)">/</tspan><tspan style="fill:var(--accent)">ddd-book</tspan><tspan style="fill:var(--fg-faint)">:</tspan><tspan style="fill:var(--purple)">ch8.node</tspan></text>
+  <path class="ln-d" d="M175 62 V100"/><path class="ln-g" d="M325 62 V100"/><path class="ln-a" d="M465 62 V100"/><path class="ln-p" d="M580 62 V100"/>
+  <rect class="bx-b" x="95"  y="104" width="160" height="56" rx="8"/><text class="ttl on-b" x="175" y="128" text-anchor="middle">推到哪个仓库</text><text class="sm" x="175" y="148" text-anchor="middle">省略 = Docker Hub</text>
+  <rect class="bx-g" x="265" y="104" width="120" height="56" rx="8"/><text class="ttl on-g" x="325" y="128" text-anchor="middle">谁的空间</text><text class="sm" x="325" y="148" text-anchor="middle">你的 Docker ID</text>
+  <rect class="bx-a" x="395" y="104" width="140" height="56" rx="8"/><text class="ttl on-a" x="465" y="128" text-anchor="middle">哪个库</text><text class="sm" x="465" y="148" text-anchor="middle">不存在会自动创建</text>
+  <rect class="bx-p" x="545" y="104" width="120" height="56" rx="8"/><text class="ttl on-p" x="605" y="128" text-anchor="middle">哪个标签</text><text class="sm" x="605" y="148" text-anchor="middle">版本</text>
+</svg>
+<figcaption>图 8-4　镜像名就是推送地址</figcaption>
+</figure>
+
+<h3>运行并测试</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker run -d --name c1 -p 5005:8080 nigelpoulton/ddd-book:ch8.node
+$ docker ps
+ID     IMAGE               COMMAND             STATUS      PORTS                    NAMES
+49..   ddd-book:ch8.node   "node app.js"       Up 6 secs   0.0.0.0:5005->8080/tcp   c1
+</pre>
+</div>
+
+<p>Docker 会优先使用本地已有的镜像，只有本地没有时才从 Docker Hub 拉取。打开浏览器访问 <code>localhost:5005</code>。如果打不开，按这个顺序排查：</p>
+<ol>
+  <li><code>docker ps</code> 确认 c1 容器在运行（如果不在，用 <code>docker logs c1</code> 看报错）；</li>
+  <li>确认端口映射正确：<code>0.0.0.0:5005-&gt;8080/tcp</code>；</li>
+  <li>检查防火墙或网络安全设置是否拦截了 5005 端口。</li>
+</ol>
+
+<h2 id="closer">再仔细看看：指令与层</h2>
+
+<p>
+  <code>docker build</code> 从上到下逐行解析 Dockerfile。以 <code>#</code> 开头的行是注释（第一行的 <code># syntax=</code> 是一个特殊的<strong>解析器指令</strong>）。
+  其余每行都是一条<strong>指令</strong>，格式为 <code>指令 参数</code>。指令名不区分大小写，但习惯上写成大写，便于阅读。
+</p>
+
+<div class="box key">
+  <div class="t">&#9733; 记住这条规律</div>
+  <p>
+    <strong>添加内容（文件、程序）的指令创建新层：</strong><code>FROM</code>、<code>RUN</code>、<code>COPY</code>、<code>ADD</code>，以及会创建目录的 <code>WORKDIR</code>。<br>
+    <strong>不添加内容的指令只创建元数据：</strong><code>EXPOSE</code>、<code>ENV</code>、<code>CMD</code>、<code>ENTRYPOINT</code>、<code>USER</code>、<code>LABEL</code>、<code>ARG</code>。
+  </p>
+</div>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker history ddd-book:ch8.node
+IMAGE          CREATED BY                                   SIZE      COMMENT
+24dd...a06b    CMD ["node" "app.js"]                        0B        buildkit.dockerfile.v0
+&lt;missing&gt;      EXPOSE map[8080/tcp:{}]                      0B        buildkit.dockerfile.v0
+&lt;missing&gt;      COPY . . # buildkit                          98kB      buildkit.dockerfile.v0
+&lt;missing&gt;      USER node                                    0B        buildkit.dockerfile.v0
+&lt;missing&gt;      RUN /bin/sh -c npm ci --omit=dev # buildkit  13.6MB    buildkit.dockerfile.v0
+&lt;missing&gt;      WORKDIR /usr/src/app                         16.4kB    buildkit.dockerfile.v0
+&lt;missing&gt;      ENV NODE_ENV=production                      0B        buildkit.dockerfile.v0
+&lt;Snip&gt;                                                          &lt;&lt;---- 以下是基础镜像的历史
+&lt;missing&gt;      ADD alpine-minirootfs-3.22.0-aarch64.tar.gz  8.84MB
+</pre>
+</div>
+
+<p><code>SIZE</code> 非零的行创建了层，<code>0B</code> 的行只添加了元数据。<code>buildkit.dockerfile.v0</code> 结尾的行来自你的 Dockerfile，下面的来自基础镜像。</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 选好基础镜像</div>
+  <p>
+    通常建议以 <strong>Docker 官方镜像</strong>、<strong>认证发布者镜像</strong>或 <strong>Docker Hardened Images</strong> 作为基础镜像，
+    它们质量高、会及时修复已知漏洞。第 16 章会进一步介绍 Hardened Images。
+  </p>
+</div>
+
+<h2 id="multistage">走向生产：多阶段构建</h2>
+
+<p>说到容器镜像，<strong>大就是坏</strong>：</p>
+<ul>
+  <li>大意味着慢（推送、拉取、启动都慢）；</li>
+  <li>大意味着可能存在更多漏洞；</li>
+  <li>大意味着更大的攻击面。</li>
+</ul>
+
+<p>
+  所以生产镜像应该只包含运行应用必需的东西。<strong>多阶段构建（multi-stage build）</strong>就是为此而生：一个 Dockerfile 里有多条 <code>FROM</code>，
+  每条 <code>FROM</code> 开始一个新的<strong>构建阶段</strong>。你可以在一个装满编译器和工具的大镜像里完成繁重的编译工作，
+  然后只把编译好的产物复制到一个精简的生产镜像里。构建器甚至能并行执行互不依赖的阶段。
+</p>
+
+<p>来看一个 Go 应用的例子（在仓库的 <code>multi-stage</code> 目录里）。不懂 Go 没关系，只需知道它会把客户端和服务端编译成两个<strong>不依赖任何运行时的可执行文件</strong>：</p>
+
+<div class="code" data-lang="dockerfile" data-file="multi-stage/Dockerfile">
+<pre>
+FROM golang:1.25-alpine AS base                # 阶段 0：准备构建环境
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+FROM base AS build-client                      # 阶段 1：编译客户端
+RUN go build -o /bin/client ./cmd/client
+
+FROM base AS build-server                      # 阶段 2：编译服务端
+RUN go build -o /bin/server ./cmd/server
+
+FROM scratch AS prod                           # 阶段 3：生产镜像
+COPY --from=build-client /bin/client /bin/
+COPY --from=build-server /bin/server /bin/
+ENTRYPOINT [ "/bin/server" ]
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="多阶段构建的四个阶段及其依赖关系">
+  <rect class="bx-b" x="20" y="110" width="190" height="110" rx="12"/>
+  <text class="ttl on-b" x="115" y="136" text-anchor="middle">阶段 0：base</text>
+  <text class="sm" x="115" y="158" text-anchor="middle">golang:1.25-alpine</text>
+  <text class="sm" x="115" y="176" text-anchor="middle">下载依赖 + 复制源码</text>
+  <text class="mono on-r" x="115" y="202" text-anchor="middle">≈ 350MB+</text>
+
+  <rect class="bx-p" x="280" y="40" width="190" height="80" rx="12"/>
+  <text class="ttl on-p" x="375" y="66" text-anchor="middle">阶段 1：build-client</text>
+  <text class="mono" x="375" y="92" text-anchor="middle">go build → /bin/client</text>
+  <rect class="bx-p" x="280" y="210" width="190" height="80" rx="12"/>
+  <text class="ttl on-p" x="375" y="236" text-anchor="middle">阶段 2：build-server</text>
+  <text class="mono" x="375" y="262" text-anchor="middle">go build → /bin/server</text>
+  <text class="sm on-p" x="375" y="170" text-anchor="middle">⇅ 并行执行</text>
+
+  <path class="ln" d="M212 150 L276 90" marker-end="url(#ar)"/>
+  <path class="ln" d="M212 180 L276 245" marker-end="url(#ar)"/>
+  <text class="sm" x="240" y="108" text-anchor="middle">FROM base</text>
+  <text class="sm" x="240" y="232" text-anchor="middle">FROM base</text>
+
+  <rect class="bx-g" x="550" y="110" width="190" height="110" rx="12"/>
+  <text class="ttl on-g" x="645" y="136" text-anchor="middle">阶段 3：prod</text>
+  <text class="sm" x="645" y="158" text-anchor="middle">FROM scratch（空镜像）</text>
+  <text class="sm" x="645" y="176" text-anchor="middle">只有两个可执行文件</text>
+  <text class="mono on-g" x="645" y="202" text-anchor="middle">≈ 26MB</text>
+  <path class="ln-g" d="M472 80 L546 140" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M472 250 L546 190" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="530" y="96" text-anchor="middle">COPY --from</text>
+  <text class="sm on-g" x="530" y="245" text-anchor="middle">COPY --from</text>
+  <text class="lbl" x="380" y="318" text-anchor="middle">前三个阶段的所有工具、源码、缓存都被丢弃，不会进入最终镜像</text>
+</svg>
+<figcaption>图 8-5　多阶段构建</figcaption>
+</figure>
+
+<ul>
+  <li><strong>base</strong> 阶段拉取 350MB+ 的 Go 镜像，复制依赖清单（<code>go.mod</code>、<code>go.sum</code>）、下载依赖、复制源码，产出一个“构建工具齐全、但应用成分很少”的中间镜像；</li>
+  <li><strong>build-client</strong> 和 <strong>build-server</strong> 都 <code>FROM base</code>，复用上一阶段的成果，各自编译一个可执行文件。它们互不依赖，所以可以<strong>并行</strong>；</li>
+  <li><strong>prod</strong> 阶段从 <code>scratch</code>（一个完全空的镜像）开始，用 <code>COPY --from</code> 从前面的阶段只拿编译好的两个文件。</li>
+</ul>
+
+<div class="code" data-lang="bash">
+<pre>
+$ cd ../multi-stage
+$ docker build -t multi:full .
+[+] Building 14.6s (15/15) FINISHED
+ &lt;Snip&gt;
+ => [build-client 1/1] RUN go build -o /bin/client ./cmd/client     5.1s   &lt;&lt;---- 并行
+ => [build-server 1/1] RUN go build -o /bin/server ./cmd/server     5.1s   &lt;&lt;---- 并行
+
+$ docker images multi
+REPOSITORY   TAG    IMAGE ID       CREATED         SIZE
+multi        full   a7a01440f2b5   5 seconds ago   26.7MB
+
+$ docker history multi:full
+IMAGE          CREATED BY                          SIZE
+a7a01440f2b5   ENTRYPOINT ["/bin/server"]          0B
+&lt;missing&gt;      COPY /bin/server /bin/ # buildkit   8.64MB
+&lt;missing&gt;      COPY /bin/client /bin/ # buildkit   8.53MB
+</pre>
+</div>
+
+<p>最终镜像只有 26.7MB、两个层，比构建用的 350MB+ 基础镜像小了十几倍。</p>
+
+<h3>构建目标：一个 Dockerfile，多个镜像</h3>
+
+<p>把最后的 prod 阶段拆成两个，就能从同一个 Dockerfile 分别构建客户端镜像和服务端镜像（仓库里的 <code>Dockerfile-final</code>）：</p>
+
+<div class="code" data-lang="dockerfile" data-file="multi-stage/Dockerfile-final（尾部）">
+<pre>
+FROM scratch AS prod-client
+COPY --from=build-client /bin/client /bin/
+ENTRYPOINT [ "/bin/client" ]
+
+FROM scratch AS prod-server
+COPY --from=build-server /bin/server /bin/
+ENTRYPOINT [ "/bin/server" ]
+</pre>
+</div>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker build -t multi:client --target prod-client -f Dockerfile-final .
+$ docker build -t multi:server --target prod-server -f Dockerfile-final .
+$ docker images multi
+REPOSITORY   TAG      IMAGE ID       SIZE
+multi        full     a7a01440f2b5   26.7MB
+multi        server   a75778df1b9c   11.7MB
+multi        client   02b621e9415f   11.9MB
+</pre>
+</div>
+
+<p><code>-f</code> 指定 Dockerfile 文件名，<code>--target</code> 指定构建到哪个阶段为止。客户端和服务端镜像各约为完整镜像的一半，合情合理。</p>
+
+<h2 id="buildx">Buildx、BuildKit、驱动与 Build Cloud</h2>
+
+<p>Docker 的构建系统本身也是客户端 / 服务端架构：</p>
+
+<ul>
+  <li><strong>客户端：Buildx</strong> —— 以 CLI 插件形式实现，支持 BuildKit 的所有新特性。自 Docker Engine 23.0 / Docker Desktop 4.19 起是默认构建客户端，所以你每次运行 <code>docker build</code> 其实都在用 Buildx。</li>
+  <li><strong>服务端：BuildKit</strong> —— 真正执行构建的引擎。每个 BuildKit 实例叫一个<strong>构建器（builder）</strong>，可以在本机、在你的数据中心、或在 Docker Build Cloud 里。</li>
+</ul>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="Buildx 客户端连接本地和远程构建器">
+  <rect class="bx-b" x="20" y="100" width="180" height="90" rx="12"/>
+  <text class="ttl on-b" x="110" y="128" text-anchor="middle">Buildx 客户端</text>
+  <text class="mono" x="110" y="152" text-anchor="middle">docker build</text>
+  <text class="sm" x="110" y="172" text-anchor="middle">发送：Dockerfile + 上下文</text>
+
+  <path class="ln-a" d="M202 130 L300 70" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M202 145 L300 145" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M202 160 L300 225" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-g" x="305" y="30" width="435" height="72" rx="10"/>
+  <text class="ttl on-g" x="325" y="54">docker 驱动（默认）</text>
+  <text class="sm" x="325" y="74">用 Docker 引擎内置的 BuildKit；配合 containerd 镜像存储</text>
+  <text class="sm" x="325" y="90">也能构建多平台镜像。镜像直接出现在 docker images 里</text>
+
+  <rect class="bx-a" x="305" y="112" width="435" height="72" rx="10"/>
+  <text class="ttl on-a" x="325" y="136">docker-container 驱动</text>
+  <text class="sm" x="325" y="156">在一个专用容器里跑独立的 BuildKit；功能最全，</text>
+  <text class="sm" x="325" y="172">用 QEMU 模拟其他 CPU 架构（能用，但慢）</text>
+
+  <rect class="bx-p" x="305" y="194" width="435" height="72" rx="10"/>
+  <text class="ttl on-p" x="325" y="218">cloud 驱动 → Docker Build Cloud</text>
+  <text class="sm" x="325" y="238">在云端原生 amd64 / arm64 硬件上构建，不需要模拟；</text>
+  <text class="sm" x="325" y="254">团队共享构建缓存。付费订阅</text>
+</svg>
+<figcaption>图 8-6　Docker 构建架构：一个客户端，多种构建器</figcaption>
+</figure>
+
+<p>
+  运行 <code>docker build</code> 时，Buildx 解析命令，把构建请求（Dockerfile、命令行参数、缓存选项、导出选项、构建上下文）发给选定的构建器。
+  构建器执行构建并导出镜像，Buildx 负责监控并报告进度。
+</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker buildx ls
+NAME/NODE                  DRIVER/ENDPOINT          PLATFORMS
+builder *                  docker-container
+ \_ builder0               desktop-linux            linux/arm64, linux/amd64, linux/riscv64,
+                                                    linux/ppc64le, linux/s390x, linux/386, ...
+cloud-nigelpoulton-ddd     cloud
+ \_ linux-arm64            cloud://nigel...arm64    linux/arm64*
+ \_ linux-amd64            cloud://nigel...amd64    linux/amd64*, linux/amd64/v2, ...
+desktop-linux              docker
+ \_ desktop-linux          desktop-linux            linux/arm64, linux/amd64, ...
+</pre>
+</div>
+
+<p>带星号 <code>*</code> 的是默认构建器。docker-container 驱动支持的平台更多（靠 QEMU 模拟），Build Cloud 只支持 AMD 和 ARM，但在原生硬件上跑，复杂构建会快得多。</p>
+
+<div class="box new">
+  <div class="t">&#10024; 最新变化：Bake 与构建历史</div>
+  <ul>
+    <li><strong>Docker Bake</strong>（<code>docker buildx bake</code>）用一个 HCL/JSON/Compose 文件声明多个构建目标，一条命令并行构建。
+      <strong>Compose v5 已经移除了内置构建器，<code>docker compose build</code> 现在直接委托给 Bake</strong>，和 <code>docker build</code> 用的是同一套引擎。</li>
+    <li><code>docker buildx history ls</code> / <code>inspect</code> 可以回看之前每次构建的耗时、缓存命中、日志和错误。</li>
+  </ul>
+</div>
+
+<h2 id="multiarch">多架构构建</h2>
+
+<p>一条 <code>docker build</code> 命令就能为多个平台构建镜像，包括和你本机不同的架构：AMD 机器能构建 ARM 镜像，ARM 机器（比如 M 系列 Mac）也能构建 AMD 镜像。</p>
+
+<p>先创建一个使用 docker-container 驱动的构建器，并设为默认：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker buildx create --driver=docker-container --name=container
+$ docker buildx use container
+</pre>
+</div>
+
+<p>进入仓库的 <code>web-app</code> 目录，同时构建 AMD 和 ARM 两个版本，并直接推送到 Docker Hub（请换成你的 Docker ID；不想推送就把 <code>--push</code> 换成 <code>--load</code>）：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker buildx build --builder=container \
+    --platform=linux/amd64,linux/arm64 \
+    -t nigelpoulton/ddd-book:ch8.1 --push .
+[+] Building 79.3s (26/26) FINISHED
+ => [linux/arm64 2/5] RUN apk add --update nodejs npm curl        19.0s
+ => [linux/amd64 2/5] RUN apk add --update nodejs npm curl        17.4s
+ => [linux/amd64 3/5] COPY . /src                                  0.0s
+ &lt;Snip&gt;
+ => => pushing manifest for docker.io/nigelpoulton/ddd-book:ch8.1@sha256:8fc61...
+</pre>
+</div>
+
+<p>每条指令都执行了两次（AMD 一次、ARM 一次），最后推送的是一个 manifest list，两个架构的镜像出现在 Docker Hub 同一个库、同一个标签下（回忆第 6 章图 6-10）。</p>
+
+<p>如果你有 Docker Build Cloud 订阅，可以创建云端构建器，然后用 <code>--builder</code> 指定它：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker buildx create --driver cloud nigelpoulton/ddd
+$ docker buildx build --builder=cloud-nigelpoulton-ddd \
+    --platform=linux/amd64,linux/arm64 \
+    -t nigelpoulton/ddd-book:ch8.1 --push .
+ => [internal] connected to docker build cloud service
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; containerd 镜像存储让事情更简单</div>
+  <p>
+    在使用 containerd 镜像存储的 Docker（Engine 29 全新安装、较新的 Docker Desktop）上，默认的 <code>docker</code> 驱动就能构建多平台镜像，
+    并且能用 <code>--load</code> 把多平台镜像直接载入本地，不一定非要额外创建 docker-container 构建器。
+  </p>
+</div>
+
+<h2 id="practices">最佳实践</h2>
+
+<h3>1. 充分利用构建缓存</h3>
+
+<p>
+  BuildKit 用缓存来加速构建。在一台干净的主机上构建一个镜像，然后立刻再构建一次，你会发现第二次瞬间完成 —— 因为第一次构建的层都被缓存了。
+  本地构建器的缓存只对本机可用；Build Cloud 的缓存可以全团队共享。
+</p>
+
+<p>构建器从上到下逐行检查 Dockerfile。对每一行，它会看缓存里是否已经有“<strong>在同样的父层之上执行同样的指令</strong>”得到的层：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 310" role="img" aria-label="构建缓存：一旦某一步未命中，后面所有步骤都要重新构建">
+  <text class="ttl" x="190" y="22" text-anchor="middle">第二次构建（只改了 app.js）</text>
+  <rect class="bx-g" x="30" y="38"  width="320" height="34" rx="6"/><text class="mono on-g" x="42" y="60">FROM alpine</text><text class="sm on-g" x="340" y="60" text-anchor="end">✓ 命中</text>
+  <rect class="bx-g" x="30" y="78"  width="320" height="34" rx="6"/><text class="mono on-g" x="42" y="100">RUN apk add nodejs npm</text><text class="sm on-g" x="340" y="100" text-anchor="end">✓ 命中</text>
+  <rect class="bx-r" x="30" y="118" width="320" height="34" rx="6"/><text class="mono on-r" x="42" y="140">COPY . /src</text><text class="sm on-r" x="340" y="140" text-anchor="end">✗ 文件变了</text>
+  <rect class="bx-r" x="30" y="158" width="320" height="34" rx="6"/><text class="mono on-r" x="42" y="180">WORKDIR /src</text><text class="sm on-r" x="340" y="180" text-anchor="end">重建</text>
+  <rect class="bx-r" x="30" y="198" width="320" height="34" rx="6"/><text class="mono on-r" x="42" y="220">RUN npm install</text><text class="sm on-r" x="340" y="220" text-anchor="end">重建（很慢！）</text>
+  <text class="sm" x="190" y="252" text-anchor="middle">改一行代码，就要重新下载所有依赖</text>
+
+  <text class="ttl" x="570" y="22" text-anchor="middle">优化后：先复制依赖清单</text>
+  <rect class="bx-g" x="410" y="38"  width="320" height="34" rx="6"/><text class="mono on-g" x="422" y="60">FROM node:22-alpine</text><text class="sm on-g" x="720" y="60" text-anchor="end">✓ 命中</text>
+  <rect class="bx-g" x="410" y="78"  width="320" height="34" rx="6"/><text class="mono on-g" x="422" y="100">WORKDIR /src</text><text class="sm on-g" x="720" y="100" text-anchor="end">✓ 命中</text>
+  <rect class="bx-g" x="410" y="118" width="320" height="34" rx="6"/><text class="mono on-g" x="422" y="140">COPY package*.json ./</text><text class="sm on-g" x="720" y="140" text-anchor="end">✓ 没变</text>
+  <rect class="bx-g" x="410" y="158" width="320" height="34" rx="6"/><text class="mono on-g" x="422" y="180">RUN npm ci</text><text class="sm on-g" x="720" y="180" text-anchor="end">✓ 命中</text>
+  <rect class="bx-r" x="410" y="198" width="320" height="34" rx="6"/><text class="mono on-r" x="422" y="220">COPY . .</text><text class="sm on-r" x="720" y="220" text-anchor="end">重建（很快）</text>
+  <text class="sm" x="570" y="252" text-anchor="middle">依赖层被缓存，只有最后一小步重来</text>
+  <text class="lbl" x="380" y="292" text-anchor="middle">规则：一旦某一步缓存未命中，后面所有步骤都不再查缓存 → 把最常变的指令放到最后</text>
+</svg>
+<figcaption>图 8-7　构建缓存的工作方式，以及如何调整指令顺序</figcaption>
+</figure>
+
+<p>几个要点：</p>
+<ul>
+  <li>任何一条指令缓存未命中，缓存就<strong>失效</strong>了，后续指令都会完整执行。所以要把<strong>最可能导致缓存失效的指令放在 Dockerfile 末尾</strong>。</li>
+  <li><code>COPY</code> 和 <code>ADD</code> 会对复制的每个文件计算校验和。即使指令文字没变，只要文件内容变了，缓存也会失效 —— 否则你就会得到旧版本的文件。</li>
+  <li>想强制忽略缓存，用 <code>docker build --no-cache</code>。</li>
+  <li><code>RUN --mount=type=cache</code>（docker init 生成的那种）可以让 npm、pip、apt、go 的下载缓存跨构建保留，即使该层需要重建也不用从头下载。</li>
+</ul>
+
+<h3>2. 只安装必需的软件包</h3>
+
+<p>
+  我们常开玩笑说“构建应用时把整个互联网都装上了”。前面那个 Node.js 应用只依赖 Express 和 Pug 两个包，但它们又依赖其他包……最终会下载 110 多个包！
+  很多包管理器提供了只装必需品的方法，比如 apt 的 <code>--no-install-recommends</code>，只安装 depends 字段里的包，不装推荐和建议的包：
+</p>
+
+<div class="code" data-lang="dockerfile">
+<pre>
+RUN apt-get update \
+ &amp;&amp; apt-get install -y --no-install-recommends curl ca-certificates \
+ &amp;&amp; rm -rf /var/lib/apt/lists/*        # 同一层里清理，不留垃圾
+</pre>
+</div>
+
+<h3>3. 更多现代实践</h3>
+
+<div class="tw"><table>
+  <tr><th>实践</th><th>为什么</th><th>怎么做</th></tr>
+  <tr><td>使用 <code>.dockerignore</code></td><td>缩小上下文、防止密钥进镜像</td><td>见上文图 8-2</td></tr>
+  <tr><td>非 root 运行</td><td>容器被攻破时限制损害</td><td><code>USER node</code> / <code>USER 1000</code></td></tr>
+  <tr><td>exec 形式的 CMD/ENTRYPOINT</td><td>正确接收信号，优雅退出</td><td><code>CMD ["node","app.js"]</code></td></tr>
+  <tr><td>选小而可信的基础镜像</td><td>更少漏洞、更快</td><td><code>-alpine</code>、<code>-slim</code>、distroless、Docker Hardened Images、<code>scratch</code></td></tr>
+  <tr><td>固定基础镜像版本</td><td>构建可重复</td><td><code>FROM node:22.19-alpine@sha256:…</code>，别用 <code>latest</code></td></tr>
+  <tr><td>不要把密钥写进 <code>ARG</code>/<code>ENV</code></td><td>它们会永久留在镜像历史里</td><td><code>RUN --mount=type=secret,id=npmrc …</code> + <code>docker build --secret id=npmrc,src=.npmrc</code></td></tr>
+  <tr><td>运行构建检查</td><td>提前发现常见错误</td><td><code>docker build --check .</code></td></tr>
+  <tr><td>加健康检查</td><td>让 Docker/Compose 知道应用是否真的可用</td><td><code>HEALTHCHECK CMD wget -qO- localhost:8080 || exit 1</code></td></tr>
+</table></div>
+
+<h3>Dockerfile 指令速查</h3>
+
+<div class="tw"><table class="cheat">
+  <tr><th>指令</th><th>作用</th><th>产生层？</th></tr>
+  <tr><td><code>FROM</code></td><td>指定基础镜像；多阶段构建中标志新阶段的开始</td><td>✓</td></tr>
+  <tr><td><code>RUN</code></td><td>构建时执行命令（安装软件、编译……）</td><td>✓</td></tr>
+  <tr><td><code>COPY</code></td><td>从构建上下文或其他阶段（<code>--from</code>）复制文件</td><td>✓</td></tr>
+  <tr><td><code>ADD</code></td><td>类似 COPY，还能解压 tar、下载 URL 或 Git 仓库（一般优先用 COPY）</td><td>✓</td></tr>
+  <tr><td><code>WORKDIR</code></td><td>设置工作目录（不存在则创建）</td><td>✓（很小）</td></tr>
+  <tr><td><code>ENV</code></td><td>设置环境变量（构建时和运行时都有效）</td><td>✗</td></tr>
+  <tr><td><code>ARG</code></td><td>构建参数（只在构建时有效，<code>--build-arg</code> 传入）</td><td>✗</td></tr>
+  <tr><td><code>USER</code></td><td>之后的指令和容器以哪个用户运行</td><td>✗</td></tr>
+  <tr><td><code>EXPOSE</code></td><td>记录应用端口</td><td>✗</td></tr>
+  <tr><td><code>CMD</code> / <code>ENTRYPOINT</code></td><td>容器启动命令（见第 7 章图 7-3）</td><td>✗</td></tr>
+  <tr><td><code>LABEL</code></td><td>添加元数据标签</td><td>✗</td></tr>
+  <tr><td><code>HEALTHCHECK</code></td><td>定义容器健康检查</td><td>✗</td></tr>
+  <tr><td><code>VOLUME</code></td><td>声明挂载点（第 15 章）</td><td>✗</td></tr>
+</table></div>
+
+<h2 id="cleanup">清理</h2>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker rm c1 -f
+$ docker rmi multi:full multi:client multi:server ddd-book:ch8.node nigelpoulton/ddd-book:ch8.node
+$ docker buildx prune          # 可选：清理构建缓存
+</pre>
+</div>
+
+<h2 id="commands">命令速查</h2>
+
+<div class="tw"><table class="cheat">
+  <tr><th>命令</th><th>作用</th></tr>
+  <tr><td><code>docker init</code></td><td>分析项目并生成 Dockerfile、.dockerignore、compose.yaml</td></tr>
+  <tr><td><code>docker build -t 名:标签 .</code></td><td>用当前目录作为上下文构建镜像；<code>-f</code> 指定 Dockerfile，<code>--target</code> 指定阶段</td></tr>
+  <tr><td><code>docker build --check .</code></td><td>只运行构建检查，不真正构建</td></tr>
+  <tr><td><code>docker tag 旧名 新名</code></td><td>给镜像加一个新名字</td></tr>
+  <tr><td><code>docker login</code> / <code>docker push</code></td><td>登录仓库 / 推送镜像</td></tr>
+  <tr><td><code>docker history 镜像</code></td><td>查看每条指令产生的层与大小</td></tr>
+  <tr><td><code>docker buildx ls / create / use</code></td><td>列出 / 创建 / 切换构建器</td></tr>
+  <tr><td><code>docker buildx build --platform a,b --push</code></td><td>多架构构建并推送</td></tr>
+  <tr><td><code>docker buildx history ls</code></td><td>查看构建历史</td></tr>
+</table></div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>容器化 = 把应用构建成镜像并作为容器运行。流程：写代码 → Dockerfile → build → push → run。</li>
+  <li><code>docker init</code> 能生成遵循最佳实践的起点；<code>docker build --check</code> 能帮你发现问题。</li>
+  <li>添加内容的指令产生新层，其余指令只产生元数据。</li>
+  <li>构建上下文会被发送给构建器，用 <code>.dockerignore</code> 排除无关和敏感文件。</li>
+  <li>多阶段构建把“构建环境”和“运行环境”分开，生产镜像只保留运行必需的产物。</li>
+  <li>Buildx 是构建客户端，BuildKit 是构建引擎；构建器可以在本地、容器里或云端，支持多架构构建。</li>
+  <li>把最常变化的指令放在最后，最大化利用构建缓存。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>把本章 node-app 的 Dockerfile 改成“先 <code>COPY package*.json</code> 再 <code>RUN npm ci</code> 最后 <code>COPY . .</code>”的写法（不用 bind mount），修改 app.js 后重新构建，观察哪些步骤显示 <code>CACHED</code>。</li>
+    <li>为一个你熟悉的语言（Python/Go/Java）写一个多阶段 Dockerfile，比较单阶段和多阶段镜像的大小。</li>
+    <li>故意在 Dockerfile 里写 <code>ENV API_KEY=secret123</code>，构建后用 <code>docker history --no-trunc</code> 和 <code>docker inspect</code> 找出这个“秘密”。然后改用 <code>--mount=type=secret</code> 重做一遍。</li>
+    <li>如果你有 Docker Hub 账号，构建一个 <code>linux/amd64,linux/arm64</code> 双架构镜像并推送，在 Docker Hub 网页上查看它的 OS/ARCH 列表。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

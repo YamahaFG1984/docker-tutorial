@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 7 章 · 容器 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="7">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 7 章</span>
+<h1>容器</h1>
+<p class="lede">
+  镜像是模板，容器是从模板启动的活生生的实例。本章带你走完容器的一生：启动、进入、查看、修改、停止、重启、删除；
+  搞清楚容器怎么知道该运行哪个程序；学会用 Docker Debug 调试“什么工具都没有”的精简容器；最后用重启策略让容器自我修复。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解容器的可写层，以及它和镜像只读层的关系</li>
+    <li>分清 <code>ENTRYPOINT</code>、<code>CMD</code> 和命令行参数三者的关系</li>
+    <li>熟练使用 <code>run</code>、<code>ps</code>、<code>exec</code>、<code>logs</code>、<code>inspect</code>、<code>stop</code>、<code>restart</code>、<code>rm</code></li>
+    <li>理解 PID 1 与“主进程退出，容器就退出”</li>
+    <li>理解 <code>docker stop</code> 背后的 SIGTERM / SIGKILL 和退出码</li>
+    <li>会用 Docker Debug 和重启策略</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="tldr">一句话概括</h2>
+
+<p>
+  容器是镜像的<strong>运行时实例</strong>，一个镜像可以启动多个容器。你可以像操作虚拟机一样启动、停止、重启、删除容器，
+  但容器更小、更快、更便携。而且容器在设计上有几个和虚拟机完全不同的理念：
+</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#128168;</span><h4>无状态、短暂</h4><p>容器被设计成随时可以丢弃和重建。虚拟机则是长期运行、连同状态一起迁移的。</p></div>
+  <div class="card"><span class="ic">&#128274;</span><h4>不可变</h4><p>部署后就不要再改它。出了问题就用新容器替换，而不是登进去在线修补。</p></div>
+  <div class="card"><span class="ic">&#9757;</span><h4>一个容器一个进程</h4><p>一个有 Web、认证、目录、商店四个功能的应用，就是四个容器 —— 这就是<strong>微服务</strong>。</p></div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 容器与虚拟机</div>
+  <p>
+    第 1 章已经比较过两者：<strong>虚拟机虚拟化硬件，容器虚拟化操作系统</strong>。Hypervisor 把 CPU、内存等切成虚拟版本打包成虚拟机；
+    容器运行时把进程树、文件系统、网络栈等操作系统资源切成虚拟版本打包成容器。虚拟机看起来像一台物理服务器，容器看起来像一个普通的操作系统。
+  </p>
+</div>
+
+<h2 id="rw-layer">镜像与容器：可写层</h2>
+
+<p>
+  一个镜像可以启动多个容器。镜像是只读的，但每个容器都可读写。Docker 的做法是：<strong>为每个容器创建一个薄薄的读写层，放在共享的镜像之上</strong>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="多个容器共享同一个只读镜像，每个容器有自己的读写层">
+  <rect class="bx-g" x="40"  y="30" width="200" height="40" rx="8"/><text class="lbl on-g" x="140" y="55" text-anchor="middle">容器 A 的读写层</text>
+  <rect class="bx-g" x="280" y="30" width="200" height="40" rx="8"/><text class="lbl on-g" x="380" y="55" text-anchor="middle">容器 B 的读写层</text>
+  <rect class="bx-g" x="520" y="30" width="200" height="40" rx="8"/><text class="lbl on-g" x="620" y="55" text-anchor="middle">容器 C 的读写层</text>
+  <path class="ln-d" d="M140 72 V96"/><path class="ln-d" d="M380 72 V96"/><path class="ln-d" d="M620 72 V96"/>
+  <rect class="bx-a" x="40" y="100" width="680" height="120" rx="12"/>
+  <text class="ttl on-a" x="60" y="124">共享的只读镜像</text>
+  <rect class="bx" x="140" y="136" width="480" height="22" rx="4"/><text class="sm" x="380" y="152" text-anchor="middle">层 3</text>
+  <rect class="bx" x="140" y="162" width="480" height="22" rx="4"/><text class="sm" x="380" y="178" text-anchor="middle">层 2</text>
+  <rect class="bx" x="140" y="188" width="480" height="22" rx="4"/><text class="sm" x="380" y="204" text-anchor="middle">层 1（基础层）</text>
+  <text class="lbl" x="380" y="250" text-anchor="middle">停止容器：读写层保留 · 重启容器：读写层恢复 · 删除容器：读写层随之删除</text>
+</svg>
+<figcaption>图 7-1　每个容器有自己的读写层，共享同一个只读镜像</figcaption>
+</figure>
+
+<p>
+  容器通过自己的读写层看到并访问镜像里的文件和程序。容器做出的任何修改都写进自己的读写层（这叫<strong>写时复制</strong>，copy-on-write：
+  第一次修改镜像里的某个文件时，先把它复制到读写层再改）。这样每个容器都能保留自己的修改，又不需要对共享镜像有写权限。
+</p>
+
+<h2 id="check">确认 Docker 在运行</h2>
+
+<p><code>docker version</code> 同时检查 CLI 和引擎，是很好的“体检”命令。如果 Server 部分报错，通常有两种原因：</p>
+<ol>
+  <li><strong>没有权限：</strong>Docker API 通过特权 Unix 套接字 <code>/var/run/docker.sock</code> 暴露。Linux 上需要把用户加入 <code>docker</code> 组（<code>sudo usermod -aG docker &lt;用户名&gt;</code>，然后重新登录），或者每条命令加 <code>sudo</code>。</li>
+  <li><strong>守护进程没运行：</strong>在使用 systemd 的 Linux 上检查一下：</li>
+</ol>
+
+<div class="code" data-lang="bash">
+<pre>
+$ systemctl is-active docker
+active
+$ sudo systemctl start docker     # 如果没在运行，就启动它
+</pre>
+</div>
+
+<h2 id="start">启动一个容器</h2>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker run -d --name webserver -p 5005:8080 nigelpoulton/ddd-book:web0.1
+Unable to find image 'nigelpoulton/ddd-book:web0.1' locally
+web0.1: Pulling from nigelpoulton/ddd-book
+4f4fb700ef54: Already exists
+cf2a607f33f7: Download complete
+&lt;Snip&gt;
+Status: Downloaded newer image for nigelpoulton/ddd-book:web0.1
+b5594b3b8b3fdce544d2ca048e4340d176bce9f5dc430812a20f1852c395e96b
+</pre>
+</div>
+
+<p>
+  <code>-d</code> 后台运行，<code>--name</code> 命名为 webserver，<code>-p 5005:8080</code> 把主机的 5005 端口映射到容器的 8080 端口（容器里的 Web 服务器监听 8080）。
+</p>
+
+<p>按下回车后发生了这些事（回忆第 5 章）：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="docker run 时镜像不在本地的处理流程">
+  <rect class="bx-b" x="10" y="50" width="120" height="60" rx="10"/><text class="ttl on-b" x="70" y="76" text-anchor="middle">CLI</text><text class="sm" x="70" y="96" text-anchor="middle">转成 API 请求</text>
+  <path class="ln" d="M132 80 H158" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="162" y="50" width="140" height="60" rx="10"/><text class="ttl on-a" x="232" y="76" text-anchor="middle">dockerd</text><text class="sm" x="232" y="96" text-anchor="middle">本地有这个镜像吗？</text>
+  <path class="ln-r" d="M232 48 V26 H390" marker-end="url(#ar-r)"/><text class="sm on-r" x="300" y="20" text-anchor="middle">没有</text>
+  <rect class="bx" x="395" y="8" width="140" height="36" rx="8"/><text class="sm" x="465" y="31" text-anchor="middle">从 Docker Hub 拉取</text>
+  <path class="ln" d="M465 46 V64 H440" />
+  <path class="ln" d="M304 80 H440" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="444" y="50" width="140" height="60" rx="10"/><text class="ttl on-g" x="514" y="76" text-anchor="middle">containerd</text><text class="sm" x="514" y="96" text-anchor="middle">shim → runc</text>
+  <path class="ln" d="M586 80 H612" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="616" y="50" width="134" height="60" rx="10"/><text class="ttl on-p" x="683" y="76" text-anchor="middle">容器运行</text><text class="sm" x="683" y="96" text-anchor="middle">+ 端口映射</text>
+  <text class="lbl" x="380" y="150" text-anchor="middle">docker run = 拉取（如需要）+ 创建 + 启动</text>
+</svg>
+<figcaption>图 7-2　docker run 的处理流程</figcaption>
+</figure>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker ps
+CONTAINER ID   IMAGE             COMMAND           STATUS      PORTS                    NAMES
+b5594b3b8b3f   nigelpoulton...   "node ./app.js"   Up 2 mins   0.0.0.0:5005->8080/tcp   webserver
+</pre>
+</div>
+
+<p>用浏览器打开 <code>localhost:5005</code>，就能看到容器里运行的 Web 应用。</p>
+
+<h2 id="how-start">容器怎么知道该运行哪个程序？</h2>
+
+<p>刚才的容器启动了一个 Web 应用，可我们并没有告诉它要运行什么。它是怎么知道的？告诉 Docker 如何启动容器里的应用，有三种方式：</p>
+
+<ol>
+  <li>镜像里的 <strong><code>ENTRYPOINT</code></strong> 指令</li>
+  <li>镜像里的 <strong><code>CMD</code></strong> 指令</li>
+  <li><strong>命令行参数</strong>（<code>docker run &lt;镜像&gt; &lt;命令&gt;</code> 里镜像名后面的部分）</li>
+</ol>
+
+<p><code>ENTRYPOINT</code> 和 <code>CMD</code> 都是可选的镜像元数据，用来存储默认启动命令。规则是：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="ENTRYPOINT、CMD 与命令行参数的组合规则">
+  <text class="ttl" x="20" y="24">规则 1：命令行参数会<tspan class="on-r">覆盖</tspan> CMD</text>
+  <rect class="bx-d" x="20" y="36" width="210" height="40" rx="8"/><text class="mono" x="125" y="61" text-anchor="middle">CMD ["nginx","-g",…]</text>
+  <text class="ttl" x="248" y="61">+</text>
+  <rect class="bx-b" x="270" y="36" width="200" height="40" rx="8"/><text class="mono on-b" x="370" y="61" text-anchor="middle">docker run nginx sh</text>
+  <path class="ln-a" d="M480 56 H520" marker-end="url(#ar-a)"/>
+  <rect class="bx-a" x="525" y="36" width="215" height="40" rx="8"/><text class="mono on-a" x="632" y="61" text-anchor="middle">实际运行：sh</text>
+
+  <text class="ttl" x="20" y="116">规则 2：命令行参数会<tspan class="on-g">追加</tspan>到 ENTRYPOINT 后面</text>
+  <rect class="bx-d" x="20" y="128" width="210" height="40" rx="8"/><text class="mono" x="125" y="153" text-anchor="middle">ENTRYPOINT ["ping"]</text>
+  <text class="ttl" x="248" y="153">+</text>
+  <rect class="bx-b" x="270" y="128" width="200" height="40" rx="8"/><text class="mono on-b" x="370" y="153" text-anchor="middle">docker run img 8.8.8.8</text>
+  <path class="ln-a" d="M480 148 H520" marker-end="url(#ar-a)"/>
+  <rect class="bx-a" x="525" y="128" width="215" height="40" rx="8"/><text class="mono on-a" x="632" y="153" text-anchor="middle">实际运行：ping 8.8.8.8</text>
+
+  <text class="ttl" x="20" y="208">规则 3：两者都有时，CMD 充当 ENTRYPOINT 的<tspan class="on-p">默认参数</tspan></text>
+  <rect class="bx-d" x="20" y="220" width="210" height="56" rx="8"/><text class="mono" x="125" y="243" text-anchor="middle">ENTRYPOINT ["ping"]</text><text class="mono" x="125" y="263" text-anchor="middle">CMD ["localhost"]</text>
+  <text class="ttl" x="248" y="253">+</text>
+  <rect class="bx-b" x="270" y="228" width="200" height="40" rx="8"/><text class="mono on-b" x="370" y="253" text-anchor="middle">docker run img</text>
+  <path class="ln-a" d="M480 248 H520" marker-end="url(#ar-a)"/>
+  <rect class="bx-a" x="525" y="228" width="215" height="40" rx="8"/><text class="mono on-a" x="632" y="253" text-anchor="middle">实际运行：ping localhost</text>
+</svg>
+<figcaption>图 7-3　ENTRYPOINT、CMD 与命令行参数</figcaption>
+</figure>
+
+<div class="box tip">
+  <div class="t">&#128161; 真的要换掉 ENTRYPOINT 怎么办？</div>
+  <p>ENTRYPOINT 不会被普通命令行参数覆盖，但可以用 <code>--entrypoint</code> 标志显式替换，比如 <code>docker run --entrypoint sh -it 镜像名</code>。</p>
+</div>
+
+<p>看看 <code>web0.1</code> 这个镜像用的是哪种方式（Windows PowerShell 用户把 <code>grep</code> 换成 <code>Select-String -Pattern 'Entrypoint' -Context 0,3</code>）：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker inspect nigelpoulton/ddd-book:web0.1 | grep Entrypoint -A 3
+            "Entrypoint": [
+                "node",
+                "./app.js"
+            ],
+</pre>
+</div>
+
+<p>镜像里写着 <code>ENTRYPOINT ["node", "./app.js"]</code>，意思是让 Node.js 运行 app.js。如果镜像既没有 ENTRYPOINT 也没有 CMD，就必须在命令行上给出命令：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+# 在 alpine 容器里运行 sleep 60，60 秒后容器退出；--rm 让容器退出后自动删除
+$ docker run --rm -d alpine sleep 60
+</pre>
+</div>
+
+<p>60 秒内运行 <code>docker ps</code> 能看到它，60 秒后它就消失了。大多数生产镜像都会设置 ENTRYPOINT 或 CMD。</p>
+
+<h2 id="exec">连接到运行中的容器</h2>
+
+<p><code>docker exec</code> 在运行中的容器里执行命令，有两种模式：</p>
+
+<div class="vs">
+  <div class="old"><div class="h">交互模式：docker exec -it</div>
+    <div class="code" data-lang="text"><pre>
+$ docker exec -it webserver sh
+/src # ls
+Dockerfile  README.md  app.js
+node_modules  package.json  views
+/src # vim app.js
+sh: vim: not found
+/src # exit
+</pre></div></div>
+  <div class="new"><div class="h">远程执行模式：docker exec</div>
+    <div class="code" data-lang="text"><pre>
+$ docker exec webserver ps
+PID   USER     TIME  COMMAND
+    1 root      0:00 node ./app.js
+   42 root      0:00 ps
+</pre></div></div>
+</div>
+
+<p>
+  交互模式把你的终端连到容器里的一个 shell 进程上，体验像 SSH；<code>-i</code> 保持标准输入打开，<code>-t</code> 分配一个终端。
+  远程执行模式把命令发给容器，把输出打印到你本地终端。无论哪种，<strong>命令必须在容器里存在</strong>才行 —— 所以上面 <code>vim</code> 失败了。
+</p>
+
+<h2 id="pid1">容器里的进程：PID 1</h2>
+
+<p>大多数容器只运行一个进程，那就是容器的<strong>主应用进程，它的 PID 永远是 1</strong>。在交互式 exec 会话里运行 <code>ps</code>：</p>
+
+<div class="code" data-lang="text">
+<pre>
+/src # ps
+PID   USER     TIME  COMMAND
+    1 root      0:00 node ./app.js      &lt;&lt;---- 主进程
+   13 root      0:00 sh                 &lt;&lt;---- 你的 exec 会话
+   22 root      0:00 ps                 &lt;&lt;---- 刚刚执行的 ps
+</pre>
+</div>
+
+<div class="box key">
+  <div class="t">&#9733; 容器的生死由 PID 1 决定</div>
+  <p>
+    容器只在它的主进程运行时才运行。<strong>杀掉 PID 1，容器就停了</strong> —— 主进程都没了，容器也就没有存在的理由了。
+    exec 进去的 shell 退出不会影响容器，因为它不是 PID 1。
+  </p>
+</div>
+
+<h2 id="inspect">docker inspect：信息宝库</h2>
+
+<p><code>docker inspect</code> 能告诉你容器的一切：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker inspect webserver
+&lt;Snip&gt;
+        "State": {
+            "Status": "running",
+        "Name": "/webserver",
+            "PortBindings": {
+                "8080/tcp": [ { "HostIp": "", "HostPort": "5005" } ]
+            },
+            "RestartPolicy": { "Name": "no", "MaximumRetryCount": 0 },
+            "Image": "nigelpoulton/ddd-book:web0.1",
+            "WorkingDir": "/src",
+            "Entrypoint": [ "node", "./app.js" ],
+&lt;Snip&gt;
+</pre>
+</div>
+
+<p>从中可以读出：容器在运行、名字叫 webserver、容器的 8080 端口绑定到主机 5005 端口、没有重启策略、基于 web0.1 镜像、启动命令继承自镜像的 ENTRYPOINT。</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 只取你想要的字段</div>
+  <p>输出太长？用 <code>--format</code> 配合 Go 模板直接取值：<code>docker inspect -f '{{.State.Status}}' webserver</code>
+    或 <code>docker inspect -f '{{.NetworkSettings.IPAddress}}' webserver</code>。</p>
+</div>
+
+<h3>查看日志</h3>
+
+<p>容器应用应该把日志写到<strong>标准输出（STDOUT）和标准错误（STDERR）</strong>，Docker 会收集它们，用 <code>docker logs</code> 查看：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker logs webserver           # 查看全部日志
+$ docker logs -f webserver        # 持续跟踪（像 tail -f），Ctrl+C 退出
+$ docker logs --tail 20 -t webserver   # 最后 20 行，带时间戳
+</pre>
+</div>
+
+<h2 id="write">往容器里写数据（反面教材）</h2>
+
+<div class="box warn">
+  <div class="t">&#9888; 仅供演示</div>
+  <p>
+    真实世界里<strong>不应该这样修改运行中的容器</strong>。需要改动时，应该构建并测试一个包含改动的新容器，然后用它替换旧容器。
+    这里演示只是为了让你理解容器读写层的行为。这种“能用但不是好做法、可能带来意外后果”的做法叫<strong>反模式（anti-pattern）</strong>。
+  </p>
+</div>
+
+<p>进入容器，用 vi 修改首页模板 <code>views/home.pug</code> 第 8 行 <code>h1</code> 后面的文字：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker exec -it webserver sh
+/src # vi views/home.pug
+</pre>
+</div>
+
+<p>不熟悉 vi？按这个步骤：</p>
+<ol>
+  <li>按 <kbd>i</kbd> 进入插入模式；</li>
+  <li>用方向键移到第 8 行，删除 <code>h1</code> 后面的文字，输入新内容；</li>
+  <li>按 <kbd>Esc</kbd> 回到命令模式，输入 <code>:wq</code> 回车保存并退出。</li>
+</ol>
+<p>刷新浏览器就能看到变化。输入 <code>exit</code> 退出容器。</p>
+
+<h2 id="lifecycle">停止、重启、删除</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="容器生命周期状态图">
+  <rect class="bx" x="20" y="90" width="120" height="50" rx="25"/><text class="ttl" x="80" y="120" text-anchor="middle">Created</text>
+  <rect class="bx-g" x="230" y="90" width="120" height="50" rx="25"/><text class="ttl on-g" x="290" y="120" text-anchor="middle">Running</text>
+  <rect class="bx-b" x="230" y="190" width="120" height="44" rx="22"/><text class="ttl on-b" x="290" y="217" text-anchor="middle">Paused</text>
+  <rect class="bx-a" x="450" y="90" width="120" height="50" rx="25"/><text class="ttl on-a" x="510" y="120" text-anchor="middle">Exited</text>
+  <rect class="bx-r" x="640" y="90" width="100" height="50" rx="25"/><text class="ttl on-r" x="690" y="120" text-anchor="middle">已删除</text>
+
+  <path class="ln" d="M142 115 H226" marker-end="url(#ar)"/><text class="mono" x="184" y="106" text-anchor="middle">start</text>
+  <path class="ln-a" d="M352 105 H446" marker-end="url(#ar-a)"/><text class="mono" x="399" y="96" text-anchor="middle">stop / 主进程退出</text>
+  <path class="ln-g" d="M450 130 C420 160 380 160 352 130" marker-end="url(#ar-g)"/><text class="mono" x="408" y="172">start / restart</text>
+  <path class="ln-r" d="M572 115 H636" marker-end="url(#ar-r)"/><text class="mono" x="604" y="106" text-anchor="middle">rm</text>
+  <path class="ln" d="M275 142 V186" marker-end="url(#ar)"/><text class="mono" x="268" y="170" text-anchor="end">pause</text>
+  <path class="ln" d="M305 188 V144" marker-end="url(#ar)"/><text class="mono" x="312" y="170">unpause</text>
+  <path class="ln-r" d="M290 88 C320 30 660 30 690 86" marker-end="url(#ar-r)"/><text class="mono" x="490" y="40" text-anchor="middle">rm -f（强制，跳过优雅停止）</text>
+  <text class="sm" x="80" y="160" text-anchor="middle">docker create</text>
+  <text class="sm" x="80" y="176" text-anchor="middle">docker run = create + start</text>
+</svg>
+<figcaption>图 7-4　容器的生命周期</figcaption>
+</figure>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker stop webserver           # 优雅停止，最多等 10 秒
+webserver
+$ docker ps                       # 运行中的容器列表里没有它了
+CONTAINER ID   IMAGE   COMMAND   CREATED   STATUS   PORTS   NAMES
+$ docker ps -a                    # -a 能看到已停止的容器
+CONTAINER ID   IMAGE         COMMAND           STATUS                       NAMES
+b5594b3b8b3f   nigelpou...   "node ./app.js"   Exited (137) 1 minute ago    webserver
+$ docker restart webserver        # 重启
+webserver
+</pre>
+</div>
+
+<p>刷新浏览器 —— <strong>你的修改还在！</strong>也可以直接从容器文件系统里读取确认：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker exec webserver cat views/home.pug
+&lt;Snip&gt;
+      div.jumbotron
+        h1 Everybody loves containers!     &lt;&lt;---- 我改的这一行
+</pre>
+</div>
+
+<p>停止和重启不会丢失修改，而且重启非常快。现在删除容器：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker rm webserver -f
+webserver
+</pre>
+</div>
+
+<p>
+  <code>-f</code> 会强制删除，不给应用通常的 10 秒宽限期来刷新缓冲区、优雅退出，而且 Docker 不会要求确认。
+  删除之后，容器的一切痕迹都没了，你改的内容也随着读写层一起消失。用同一个镜像 <code>docker run</code> 一个新容器，它不会有你的改动。
+</p>
+
+<h3>docker stop 背后发生了什么：信号与退出码</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="docker stop 先发 SIGTERM，10 秒后发 SIGKILL">
+  <line class="ln" x1="40" y1="90" x2="720" y2="90"/>
+  <circle class="dot-b" cx="60" cy="90" r="7"/>
+  <text class="ttl on-b" x="60" y="64" text-anchor="middle">docker stop</text>
+  <text class="sm" x="60" y="118" text-anchor="middle">向 PID 1 发送</text>
+  <text class="mono" x="60" y="136" text-anchor="middle">SIGTERM</text>
+  <rect class="fill-a" x="70" y="80" width="480" height="20" rx="4"/>
+  <text class="sm" x="310" y="94" text-anchor="middle">宽限期（默认 10 秒，可用 -t 调整）：应用应在此期间收尾并退出</text>
+  <circle class="dot-a" cx="560" cy="90" r="7"/>
+  <text class="ttl on-a" x="560" y="64" text-anchor="middle">10 秒到了还没退出</text>
+  <text class="sm" x="560" y="118" text-anchor="middle">强制发送</text>
+  <text class="mono" x="560" y="136" text-anchor="middle">SIGKILL</text>
+  <rect class="bx-g" x="120" y="152" width="260" height="36" rx="8"/><text class="sm on-g" x="250" y="175" text-anchor="middle">应用正常处理了 SIGTERM → Exited (0) 或 (143)</text>
+  <rect class="bx-r" x="440" y="152" width="280" height="36" rx="8"/><text class="sm on-r" x="580" y="175" text-anchor="middle">被 SIGKILL 杀死 → Exited (137) = 128 + 9</text>
+</svg>
+<figcaption>图 7-5　docker stop 的两阶段</figcaption>
+</figure>
+
+<div class="box deep">
+  <div class="t">&#128300; 深入：为什么上面显示 Exited (137)？</div>
+  <p>
+    退出码 137 = 128 + 9（SIGKILL 的编号），说明容器是被<strong>强制杀死</strong>的，而不是自己优雅退出的。
+    原因是：Linux 内核对 PID 1 特殊对待 —— 如果 PID 1 进程没有为 SIGTERM 注册处理函数，这个信号会被<strong>直接忽略</strong>。
+    很多 Node.js、Python 应用作为 PID 1 运行时都没处理 SIGTERM，于是只能干等 10 秒被 SIGKILL。
+    解决办法：在代码里处理 SIGTERM（比如 Node.js 的 <code>process.on('SIGTERM', …)</code>），或者运行时加 <code>--init</code>，
+    让 Docker 自带的迷你 init 进程（tini）当 PID 1，负责转发信号和回收僵尸进程。
+  </p>
+</div>
+
+<h2 id="kill-main">杀死主进程会怎样</h2>
+
+<p>来验证“杀掉主进程就会杀掉容器”。启动一个交互式 Ubuntu 容器，让 Bash 作为主进程：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker run --name ddd-ctr -it ubuntu:24.04 bash
+root@d3c892ad0eb3:/# ps
+  PID TTY          TIME CMD
+    1 pts/0    00:00:00 bash
+    9 pts/0    00:00:00 ps
+root@d3c892ad0eb3:/# exit
+$ docker ps -a
+CONTAINER ID   IMAGE          COMMAND   STATUS                  NAMES
+d3c892ad0eb3   ubuntu:24.04   "bash"    Exited (0) 3 secs ago   ddd-ctr
+</pre>
+</div>
+
+<p>输入 <code>exit</code> 结束了 Bash（PID 1），容器随之退出，退出码 0 表示正常退出。重启它，并用 <code>docker attach</code> 把终端重新连到主进程：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker restart ddd-ctr
+$ docker attach ddd-ctr
+root@d3c892ad0eb3:/#
+</pre>
+</div>
+
+<div class="box key">
+  <div class="t">&#9733; Ctrl+P Ctrl+Q：离开但不杀死</div>
+  <p>
+    想从容器里出来又不杀死主进程？依次按 <kbd>Ctrl</kbd>+<kbd>P</kbd>、<kbd>Ctrl</kbd>+<kbd>Q</kbd>，终端会显示 <code>read escape sequence</code> 并回到本地，
+    容器继续运行。<code>attach</code> 连的是主进程（PID 1），在里面 <code>exit</code> 会杀死容器；<code>exec</code> 开的是新进程，在里面 <code>exit</code> 不影响容器。
+  </p>
+</div>
+
+<h2 id="debug">用 Docker Debug 调试精简容器</h2>
+
+<p>
+  部署<strong>精简镜像</strong>是公认的好做法：只含应用代码和依赖，不带 shell 和调试工具，镜像更小、更安全。但这也让出问题时很难排查。
+  前面的 ddd-ctr 容器里，<code>ping</code>、<code>nslookup</code>、<code>vim</code> 统统不存在：
+</p>
+
+<div class="code" data-lang="text">
+<pre>
+root@d3c892ad0eb3:/# ping nigelpoulton.com
+bash: ping: command not found
+root@d3c892ad0eb3:/# nslookup nigelpoulton.com
+bash: nslookup: command not found
+</pre>
+</div>
+
+<p>
+  <strong>Docker Debug</strong> 就是为此而生：它能为<strong>没有 shell 的</strong>镜像和容器提供 shell，并无缝注入强大的调试工具。
+  原理是把一个装满工具的“工具箱”以 <code>/nix</code> 目录的形式挂进调试会话里 —— 只在调试会话中可见，容器本身永远看不到它，退出调试后就被移除。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="Docker Debug 把工具箱挂入调试会话">
+  <rect class="bx-g" x="30" y="30" width="330" height="170" rx="12"/>
+  <text class="ttl on-g" x="195" y="54" text-anchor="middle">运行中的精简容器</text>
+  <rect class="bx" x="50" y="70" width="140" height="110" rx="8"/>
+  <text class="sm" x="120" y="96" text-anchor="middle">容器文件系统</text>
+  <text class="sm" x="120" y="116" text-anchor="middle">没有 shell</text>
+  <text class="sm" x="120" y="134" text-anchor="middle">没有 ping / vim</text>
+  <text class="sm" x="120" y="152" text-anchor="middle">只有应用</text>
+  <rect class="bx-p" x="205" y="70" width="140" height="110" rx="8"/>
+  <text class="ttl on-p" x="275" y="96" text-anchor="middle">/nix 工具箱</text>
+  <text class="sm" x="275" y="118" text-anchor="middle">vim · curl · htop</text>
+  <text class="sm" x="275" y="136" text-anchor="middle">bash / zsh / fish</text>
+  <text class="sm" x="275" y="154" text-anchor="middle">容器看不见它</text>
+  <path class="ln-p" d="M500 115 H349" marker-end="url(#ar-p)"/>
+  <rect class="bx-b" x="505" y="80" width="225" height="70" rx="10"/>
+  <text class="ttl on-b" x="617" y="108" text-anchor="middle">docker debug ddd-ctr</text>
+  <text class="sm" x="617" y="130" text-anchor="middle">install 可从 nixos 装任意包</text>
+</svg>
+<figcaption>图 7-6　Docker Debug 的工作方式</figcaption>
+</figure>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker debug ddd-ctr
+This is an attach shell, i.e.:
+- Any changes to the container filesystem are visible to the container directly.
+- The /nix directory is invisible to the actual container.
+root@d3c892ad0eb3 / [ddd-ctr]
+docker &gt; ping nigelpoulton.com
+PING nigelpoulton.com (192.124.249.126) 56(84) bytes of data.
+64 bytes from cloudproxy10126.sucuri.net: icmp_seq=1 ttl=63 time=58.3 ms
+^C
+docker &gt; nslookup nigelpoulton.com
+zsh: command not found: nslookup
+docker &gt; install bind                &lt;&lt;---- 从 search.nixos.org 安装任意包
+installing 'bind-9.18.19'
+docker &gt; nslookup nigelpoulton.com
+Name:    nigelpoulton.com
+Address: 192.124.249.126
+docker &gt; entrypoint --print          &lt;&lt;---- 查看/检查镜像的启动命令
+node ./app.js
+docker &gt; exit
+</pre>
+</div>
+
+<p>调试运行中的容器和调试镜像（或已停止的容器）行为不同：</p>
+
+<div class="tw"><table>
+  <tr><th>调试对象</th><th>会话类型</th><th>你做的修改</th></tr>
+  <tr><td>运行中的容器</td><td>attach shell</td><td><strong>立即对容器可见，并且在容器重启后依然保留</strong></td></tr>
+  <tr><td>镜像 / 已停止的容器</td><td>sandbox shell（临时加一个读写层）</td><td>退出调试会话后<strong>全部丢弃</strong></td></tr>
+</table></div>
+
+<p>无论哪种情况，你安装的工具都只存在于工具箱中，永远不会成为容器或镜像的一部分。</p>
+
+<div class="box new">
+  <div class="t">&#10024; 关于 Docker Debug 的可用性</div>
+  <p>
+    Docker Debug 随 Docker Desktop 提供（<code>docker debug</code> CLI 插件），需要 <code>docker login</code>。原书写作时它需要 Pro/Team/Business 订阅，
+    具体的订阅要求请以<a href="https://docs.docker.com/reference/cli/docker/debug/">官方文档</a>为准。
+    如果你用的是纯 Docker Engine，可以用一个替代思路：启动一个带工具的“调试容器”，与目标容器<strong>共享命名空间</strong>：
+    <code>docker run -it --rm --pid container:ddd-ctr --network container:ddd-ctr nicolaka/netshoot</code>。
+  </p>
+</div>
+
+<h2 id="restart">用重启策略实现自我修复</h2>
+
+<p>
+  <strong>重启策略</strong>是一种简单的自我修复机制，让本机的 Docker 引擎自动重启失败的容器。重启策略是按容器设置的，Docker 支持四种：
+</p>
+
+<div class="tw"><table>
+  <tr><th>策略</th><th>非零退出码<br><span class="sm">（出错了）</span></th><th>零退出码<br><span class="sm">（正常退出）</span></th><th>docker stop</th><th>守护进程重启后</th></tr>
+  <tr><td><code>no</code>（默认）</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td></tr>
+  <tr><td><code>on-failure[:N]</code></td><td>✓</td><td>✗</td><td>✗</td><td>✓</td></tr>
+  <tr><td><code>always</code></td><td>✓</td><td>✓</td><td>✗</td><td>✓（即使之前被手动停止过）</td></tr>
+  <tr><td><code>unless-stopped</code></td><td>✓</td><td>✓</td><td>✗</td><td>✓（手动停止过的不启动）</td></tr>
+</table></div>
+
+<p>演示 <code>always</code> 策略：启动一个交互式容器，然后 <code>exit</code> 杀死主进程（正常退出，退出码 0）：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker run --name neversaydie -it --restart always alpine sh
+/ # exit
+$ docker ps
+CONTAINER ID   IMAGE    COMMAND   CREATED          STATUS         NAMES
+1933623830bb   alpine   "sh"      35 seconds ago   Up 2 seconds   neversaydie
+$ docker inspect neversaydie | grep RestartCount
+        "RestartCount": 1,
+</pre>
+</div>
+
+<p>
+  容器 35 秒前创建，但只运行了 2 秒 —— 因为你让它退出后，Docker 自动重启了它。注意 Docker 重启的是<strong>同一个容器</strong>，而不是新建一个，
+  所以 <code>RestartCount</code> 变成了 1。
+</p>
+
+<p>
+  <code>always</code> 有个有趣的特性：如果你用 <code>docker stop</code> 停止了容器，然后 Docker 守护进程重启（比如服务器重启），
+  守护进程起来后<strong>会把这个容器也启动</strong>。如果你不想要这种行为，就用 <code>unless-stopped</code>。
+</p>
+
+<div class="box new">
+  <div class="t">&#10024; 更正原书：Compose 和 Swarm 的写法不同</div>
+  <p>原书把两种写法混在了一起。实际上：</p>
+  <ul>
+    <li><strong>Docker Compose</strong>（第 9 章）用服务级的 <code>restart:</code> 键：<code>restart: unless-stopped</code>，取值和 <code>docker run --restart</code> 一样。</li>
+    <li><strong>Docker Swarm</strong>（第 12 章）用 <code>deploy.restart_policy.condition</code>，取值是 <code>none</code>、<code>on-failure</code>、<code>any</code>。</li>
+  </ul>
+</div>
+
+<div class="code" data-lang="yaml" data-file="compose.yaml">
+<pre>
+services:
+  web:
+    image: nginx
+    restart: unless-stopped        # Compose：单机
+  worker:
+    image: my-worker
+    deploy:
+      restart_policy:              # Swarm：集群
+        condition: on-failure
+        max_attempts: 3
+</pre>
+</div>
+
+<h2 id="limits">给容器设置资源上限</h2>
+
+<p>原书在第 16 章才提到 cgroups，但限制资源是日常就会用到的，这里先学两个最常用的参数：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker run -d --name limited --memory 512m --cpus 1.5 nginx   # 最多 512MB 内存、1.5 个 CPU
+$ docker stats --no-stream                                      # 查看各容器实时资源占用
+CONTAINER ID   NAME      CPU %     MEM USAGE / LIMIT   MEM %
+a1b2c3d4e5f6   limited   0.00%     8.1MiB / 512MiB     1.58%
+</pre>
+</div>
+
+<p>容器内存用超上限会被内核 OOM Killer 杀掉（<code>docker inspect</code> 里 <code>OOMKilled: true</code>，退出码 137）。</p>
+
+<h2 id="cleanup">清理</h2>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker rm $(docker ps -aq) -f     # 删除所有容器（不会确认，慎用！）
+$ docker rmi $(docker images -q)    # 删除所有镜像
+$ docker container prune            # 或者：只删除所有已停止的容器
+</pre>
+</div>
+
+<p>要先删容器，再删镜像 —— 被容器使用的镜像删不掉。</p>
+
+<h2 id="commands">命令速查</h2>
+
+<div class="tw"><table class="cheat">
+  <tr><th>命令</th><th>作用</th></tr>
+  <tr><td><code>docker run -it ubuntu bash</code></td><td>启动交互式容器；<code>-d</code> 后台、<code>--name</code> 命名、<code>-p</code> 端口、<code>--rm</code> 退出即删</td></tr>
+  <tr><td><kbd>Ctrl</kbd>+<kbd>P</kbd> <kbd>Ctrl</kbd>+<kbd>Q</kbd></td><td>从容器中脱离而不杀死主进程</td></tr>
+  <tr><td><code>docker ps [-a]</code></td><td>列出运行中的容器；<code>-a</code> 包括已停止的</td></tr>
+  <tr><td><code>docker exec -it &lt;容器&gt; sh</code></td><td>在容器里开一个交互式 shell；去掉 <code>-it</code> 则远程执行单条命令</td></tr>
+  <tr><td><code>docker attach &lt;容器&gt;</code></td><td>把终端连到容器主进程</td></tr>
+  <tr><td><code>docker logs [-f] &lt;容器&gt;</code></td><td>查看 / 跟踪容器日志</td></tr>
+  <tr><td><code>docker stop &lt;容器&gt;</code></td><td>先 SIGTERM，10 秒后 SIGKILL</td></tr>
+  <tr><td><code>docker restart &lt;容器&gt;</code></td><td>重启容器</td></tr>
+  <tr><td><code>docker rm [-f] &lt;容器&gt;</code></td><td>删除已停止的容器；<code>-f</code> 强制删除运行中的</td></tr>
+  <tr><td><code>docker inspect &lt;容器&gt;</code></td><td>查看详细配置和运行时信息</td></tr>
+  <tr><td><code>docker stats</code></td><td>实时资源占用</td></tr>
+  <tr><td><code>docker debug &lt;容器|镜像&gt;</code></td><td>为精简容器/镜像提供带工具箱的调试 shell</td></tr>
+</table></div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>容器是镜像的运行时实例：共享只读镜像，各自拥有一个薄的读写层。停止/重启不丢修改，删除则读写层一起消失。</li>
+  <li>容器启动哪个程序，由镜像的 ENTRYPOINT / CMD 或命令行参数决定：参数覆盖 CMD、追加到 ENTRYPOINT。</li>
+  <li>容器通常只运行一个主进程（PID 1），它退出容器就退出。</li>
+  <li><code>docker stop</code> 先发 SIGTERM，宽限期后发 SIGKILL；退出码 137 意味着被强制杀死。</li>
+  <li>Docker Debug 能在不修改容器的前提下为精简容器注入调试工具。</li>
+  <li>重启策略（no / on-failure / always / unless-stopped）让容器能自动从故障中恢复。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>运行 <code>docker run -d --name t1 nginx</code>，然后用 <code>time docker stop t1</code> 看停止花了多久。再用 <code>--init</code> 启动一个 <code>node:22-alpine</code> 容器运行 <code>node -e "setInterval(()=>{},1000)"</code>，对比有无 <code>--init</code> 时 stop 的耗时和退出码。</li>
+    <li>分别用 <code>docker run alpine echo hi</code>、<code>docker run --entrypoint ls alpine /</code> 验证 CMD 被覆盖、ENTRYPOINT 被替换的效果。</li>
+    <li>启动一个 <code>--restart on-failure:3</code> 的容器，运行 <code>sh -c "exit 1"</code>，观察 <code>RestartCount</code> 最终停在几。</li>
+    <li>用 <code>docker run --memory 20m alpine sh -c "tail /dev/zero"</code> 触发一次 OOM，然后用 <code>docker inspect</code> 找到 <code>OOMKilled</code> 字段。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

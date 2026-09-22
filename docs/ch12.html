@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 12 章 · Docker Swarm — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="12">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 12 章</span>
+<h1>Docker Swarm</h1>
+<p class="lede">
+  Compose 管理的是一台机器上的应用。如果要把应用跑在<strong>多台</strong>机器组成的集群上，并且能自动扩缩容、自我修复、滚动更新呢？
+  这就需要<strong>编排器（orchestrator）</strong>。Docker 自带的编排器叫 <strong>Swarm</strong>：简单、内置、零额外安装，是学习 Kubernetes 前的最佳热身。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解 swarm（集群）与 Swarm（编排器）、管理节点与工作节点</li>
+    <li>搭建一个高可用的多节点 swarm</li>
+    <li>理解<strong>期望状态</strong>、<strong>观察状态</strong>与<strong>调和（reconciliation）</strong></li>
+    <li>用 <code>docker stack deploy</code> 部署、扩容、滚动更新应用</li>
+    <li>理解为什么应该<strong>声明式</strong>而不是命令式地管理应用</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<div class="box new">
+  <div class="t">&#10024; Swarm 在 2026 年</div>
+  <p>
+    Kubernetes 早已是容器编排的事实标准，Swarm 的使用者在减少，原书作者也因此把 Swarm 压缩成了这一章。
+    不过 Swarm 仍是 Docker Engine 29 的内置功能、仍在维护（Mirantis 等公司持续投入），对于不需要 Kubernetes 那么复杂的小团队和小型业务依然是很好的选择。
+    另外，第 14 章的 overlay 网络和第 16 章的 Docker 机密都依赖 Swarm 模式。
+  </p>
+</div>
+
+<h2 id="primer">Swarm 入门</h2>
+
+<p>
+  2010 年代中期发生过一场“编排之战”：Docker Swarm、HashiCorp Nomad、Mesosphere DC/OS 和 Kubernetes 争夺容器编排平台的王座。
+  如今 Kubernetes 胜出并拥有最大、最活跃的生态，但 Swarm 仍有一批拥趸，在某些场景下比 Kubernetes 更合适 —— 比如需求简单、不想承担 Kubernetes 陡峭学习曲线和运维开销的小企业。
+</p>
+
+<p>Docker Swarm 是两样东西：</p>
+<ol>
+  <li><strong>一个安全的 Docker 节点集群</strong>（小写 s 的 swarm）；</li>
+  <li><strong>一个智能的应用编排器</strong>（大写 S 的 Swarm）。</li>
+</ol>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="swarm 集群由管理节点和工作节点组成">
+  <rect class="bx" x="20" y="20" width="720" height="250" rx="14"/>
+  <text class="ttl" x="40" y="44">swarm 集群</text>
+  <rect class="bx-a" x="60" y="60" width="640" height="100" rx="12"/>
+  <text class="ttl on-a" x="80" y="82">管理节点（控制平面）· 高可用</text>
+  <rect class="bx" x="100" y="94" width="150" height="54" rx="8"/><text class="ttl" x="175" y="118" text-anchor="middle">mgr1</text><text class="sm on-a" x="175" y="138" text-anchor="middle">Leader</text>
+  <rect class="bx" x="305" y="94" width="150" height="54" rx="8"/><text class="ttl" x="380" y="118" text-anchor="middle">mgr2</text><text class="sm" x="380" y="138" text-anchor="middle">Reachable</text>
+  <rect class="bx" x="510" y="94" width="150" height="54" rx="8"/><text class="ttl" x="585" y="118" text-anchor="middle">mgr3</text><text class="sm" x="585" y="138" text-anchor="middle">Reachable</text>
+  <path class="ln-d" d="M252 121 H303"/><path class="ln-d" d="M457 121 H508"/>
+  <text class="sm" x="380" y="84" text-anchor="middle">Raft 共识 · 加密的集群存储</text>
+  <rect class="bx-g" x="160" y="180" width="440" height="76" rx="12"/>
+  <text class="ttl on-g" x="180" y="202">工作节点 · 运行用户应用</text>
+  <rect class="bx" x="200" y="212" width="160" height="34" rx="8"/><text class="ttl" x="280" y="234" text-anchor="middle">wrk1</text>
+  <rect class="bx" x="400" y="212" width="160" height="34" rx="8"/><text class="ttl" x="480" y="234" text-anchor="middle">wrk2</text>
+</svg>
+<figcaption>图 12-1　一个 5 节点 swarm：3 个管理节点 + 2 个工作节点</figcaption>
+</figure>
+
+<ul>
+  <li><strong>管理节点（manager）</strong>运行控制平面服务，负责保护集群安全并提供编排智能；</li>
+  <li><strong>工作节点（worker）</strong>运行用户应用；</li>
+  <li>两种节点都可以是物理机、虚拟机、云主机……唯一的要求是装了 Docker，并且能通过可靠的网络互相通信。</li>
+</ul>
+
+<p>默认情况下管理节点<strong>也会</strong>运行用户应用。实验环境这样没问题，但在繁忙的生产环境中，最好让管理节点专心做控制平面的工作。</p>
+
+<h2 id="build">搭建 swarm</h2>
+
+<p>
+  你需要两台或更多装了 Docker 的机器。推荐用 <a href="https://labs.play-with-docker.com/">Play with Docker</a> 快速创建几个节点，
+  也可以用 Multipass、VirtualBox 创建本地虚拟机。<strong>不建议用 Docker Desktop</strong>，因为它只有一个 Docker 节点。
+</p>
+
+<p>生产环境应考虑：</p>
+<ul>
+  <li><strong>3 个管理节点</strong>，分布在不同可用区，保证高可用；</li>
+  <li>足够多的工作节点来满足应用需求；</li>
+  <li>节点之间能通过名字互相解析，并开放以下端口：</li>
+</ul>
+
+<div class="tw"><table>
+  <tr><th>端口</th><th>用途</th></tr>
+  <tr><td><code>2377/tcp</code></td><td>管理平面通信（节点加入、集群管理）</td></tr>
+  <tr><td><code>7946/tcp</code> + <code>7946/udp</code></td><td>控制平面通信（基于 SWIM 的 gossip 协议）</td></tr>
+  <tr><td><code>4789/udp</code></td><td>overlay 网络的 VXLAN 数据平面（第 14 章）</td></tr>
+</table></div>
+
+<h3>初始化 swarm</h3>
+
+<p>登录到你想作为第一个管理节点的机器上运行（如果节点有多个 IP，会提示你用 <code>--advertise-addr</code> 指定主 IP）：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker swarm init
+Swarm initialized: current node (b8slc7l29tgdetxgy8acy1k1q) is now a manager.
+
+To add a worker to this swarm, run the following command:
+    docker swarm join --token SWMTKN-1-2hl6...-...3lqg 172.31.40.192:2377
+</pre>
+</div>
+
+<p>恭喜，你有了一个单节点 swarm。</p>
+
+<h3>添加工作节点（可选）</h3>
+
+<p>管理节点也能跑应用，所以工作节点是可选的。如果资源够，把上面输出里的整条 <code>docker swarm join</code> 命令（含令牌）复制到要作为工作节点的机器上运行：</p>
+
+<div class="code" data-lang="text">
+<pre>
+wrk-1 $ docker swarm join --token SWMTKN-1-2hl6...-...3lqg 172.31.40.192:2377
+This node joined a swarm as a worker.
+</pre>
+</div>
+
+<h3>添加管理节点实现高可用</h3>
+
+<p>在管理节点上获取“加入为管理节点”的命令，然后到其他机器上运行它：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker swarm join-token manager
+To add a manager to this swarm, run the following command:
+    docker swarm join --token SWMTKN-1-2f4s47lja0z1ddkgv...6ytm3qnq9bu8uei9stiu 172.31.40.192:2377
+
+$ docker node ls
+ID                            HOSTNAME   STATUS   AVAILABILITY   MANAGER STATUS   ENGINE VERSION
+b8slc7l29tgdetxgy8acy1k1q *   node1      Ready    Active         Leader           29.8.0
+y43jr1d754pbjv3arlhpn9pqw     node2      Ready    Active         Reachable        29.8.0
+k1npnfxr7ykueac4jovmyiv0b     node3      Ready    Active         Reachable        29.8.0
+w3e321uxty2quuqnsk1w19kfc     node4      Ready    Active                          29.8.0
+kbodotf68tz8dne2ktk1g5mt4     node5      Ready    Active                          29.8.0
+</pre>
+</div>
+
+<p>
+  管理节点的 <code>MANAGER STATUS</code> 是 <code>Leader</code> 或 <code>Reachable</code>，工作节点这一列为空；星号 <code>*</code> 表示你执行命令的那个节点。
+  Swarm 采用<strong>主备（active/passive）</strong>多管理节点模型：一个 Leader 掌控集群，其他管理节点做后备。
+</p>
+
+<div class="box key">
+  <div class="t">&#9733; 为什么管理节点要用奇数个？</div>
+  <p>
+    管理节点之间用 <strong>Raft 共识算法</strong>保持一致，任何决策都需要<strong>超过半数</strong>的管理节点同意。
+    3 个管理节点可以容忍 1 个故障，5 个可以容忍 2 个；而 4 个和 3 个一样只能容忍 1 个 —— 多一个节点却没多一点容错，所以用奇数。
+    另外请注意，这是<strong>集群</strong>的高可用，不是<strong>应用</strong>的高可用：如果挂掉的管理节点上恰好运行着某个数据库的唯一副本，那个数据库照样不可用。
+  </p>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="不同管理节点数量能容忍的故障数">
+  <text class="lbl" x="120" y="24" text-anchor="middle">管理节点数</text>
+  <text class="lbl" x="300" y="24" text-anchor="middle">多数派（法定人数）</text>
+  <text class="lbl" x="500" y="24" text-anchor="middle">可容忍故障</text>
+  <text class="lbl" x="660" y="24" text-anchor="middle">建议</text>
+  <text class="mono" x="120" y="56" text-anchor="middle">1</text><text class="mono" x="300" y="56" text-anchor="middle">1</text><text class="mono on-r" x="500" y="56" text-anchor="middle">0</text><text class="sm" x="660" y="56" text-anchor="middle">仅实验</text>
+  <text class="mono" x="120" y="84" text-anchor="middle">3</text><text class="mono" x="300" y="84" text-anchor="middle">2</text><text class="mono on-g" x="500" y="84" text-anchor="middle">1</text><text class="sm on-g" x="660" y="84" text-anchor="middle">✓ 最常用</text>
+  <text class="mono" x="120" y="112" text-anchor="middle">4</text><text class="mono" x="300" y="112" text-anchor="middle">3</text><text class="mono" x="500" y="112" text-anchor="middle">1</text><text class="sm" x="660" y="112" text-anchor="middle">没意义</text>
+  <text class="mono" x="120" y="140" text-anchor="middle">5</text><text class="mono" x="300" y="140" text-anchor="middle">3</text><text class="mono on-g" x="500" y="140" text-anchor="middle">2</text><text class="sm on-g" x="660" y="140" text-anchor="middle">✓ 大型集群</text>
+  <line class="ln" x1="40" y1="34" x2="720" y2="34"/>
+</svg>
+<figcaption>图 12-2　管理节点数量与容错能力</figcaption>
+</figure>
+
+<h2 id="deploy">部署 Swarm 应用</h2>
+
+<p>这一节把应用部署到 swarm 上，体验 Swarm 的编排能力：跨节点调度、扩缩容、从故障中自我修复、滚动更新。</p>
+
+<h3>示例应用</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 256" role="img" aria-label="Swarm 示例应用：4 个 web-fe 副本和 1 个 redis 副本分布在多个节点上">
+  <rect class="bx-p" x="20" y="20" width="720" height="220" rx="14"/>
+  <text class="ttl on-p" x="40" y="44">加密的 overlay 网络 counter-net（横跨所有节点）</text>
+  <rect class="bx" x="40"  y="62" width="130" height="150" rx="10"/><text class="ttl" x="105" y="84" text-anchor="middle">mgr1</text>
+  <rect class="bx" x="180" y="62" width="130" height="150" rx="10"/><text class="ttl" x="245" y="84" text-anchor="middle">mgr2</text>
+  <rect class="bx" x="320" y="62" width="130" height="150" rx="10"/><text class="ttl" x="385" y="84" text-anchor="middle">mgr3</text>
+  <rect class="bx" x="460" y="62" width="130" height="150" rx="10"/><text class="ttl" x="525" y="84" text-anchor="middle">wrk1</text>
+  <rect class="bx" x="600" y="62" width="120" height="150" rx="10"/><text class="ttl" x="660" y="84" text-anchor="middle">wrk2</text>
+  <rect class="bx-a" x="55"  y="100" width="100" height="36" rx="6"/><text class="sm on-a" x="105" y="123" text-anchor="middle">web-fe.3</text>
+  <rect class="bx-a" x="195" y="100" width="100" height="36" rx="6"/><text class="sm on-a" x="245" y="123" text-anchor="middle">web-fe.4</text>
+  <rect class="bx-a" x="335" y="100" width="100" height="36" rx="6"/><text class="sm on-a" x="385" y="123" text-anchor="middle">web-fe.2</text>
+  <rect class="bx-a" x="475" y="100" width="100" height="36" rx="6"/><text class="sm on-a" x="525" y="123" text-anchor="middle">web-fe.1</text>
+  <rect class="bx-g" x="610" y="100" width="100" height="36" rx="6"/><text class="sm on-g" x="660" y="123" text-anchor="middle">redis.1</text>
+  <rect class="bx-d" x="610" y="150" width="100" height="30" rx="15"/><text class="sm" x="660" y="170" text-anchor="middle">counter-vol</text>
+  <text class="sm" x="380" y="224" text-anchor="middle">每个节点都发布 5001 端口（ingress 路由网格，第 13 章）</text>
+</svg>
+<figcaption>图 12-3　示例应用：两个服务、一个加密 overlay 网络、一个卷、一个发布端口</figcaption>
+</figure>
+
+<div class="box note">
+  <div class="t">&#9432; 术语</div>
+  <p>本章中，<strong>服务（service）</strong>指 Docker 的 service 对象，它管理一个或多个相同的容器；“容器”和“副本（replica）”两个词混用。</p>
+</div>
+
+<p>在一个管理节点上克隆仓库，进入 <code>swarm-new</code> 目录：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ git clone https://github.com/nigelpoulton/ddd-book.git
+$ cd ddd-book/swarm-new
+</pre>
+</div>
+
+<div class="code" data-lang="yaml" data-file="swarm-new/compose.yaml">
+<pre>
+networks:
+  counter-net:
+    driver: overlay             # overlay 网络：横跨整个 swarm
+    driver_opts:
+      encrypted: 'yes'          # 加密应用流量
+volumes:
+  counter-vol:
+services:
+  web-fe:
+    image: nigelpoulton/ddd-book:swarm-app
+    command: python app.py
+    deploy:
+      replicas: 4               # 部署 4 个副本
+      update_config:            # 如何进行更新：
+        parallelism: 2          #   每次更新 2 个副本
+        delay: 10s              #   每批之间等 10 秒
+        failure_action: rollback  # 失败就回滚
+      restart_policy:           # 副本失败时：
+        condition: on-failure   #   只在失败时重启
+        delay: 5s               #   重启间隔 5 秒
+        max_attempts: 3         #   最多尝试 3 次
+        window: 120s            #   2 分钟后判定是否重启成功
+    networks:
+      - counter-net
+    ports:
+      - "5001:8080"             # 在主机 5001 端口发布
+  redis:
+    image: "redis:alpine"
+    networks:
+      counter-net:
+    volumes:
+      - type: volume
+        source: counter-vol
+        target: /data           # 注：作者仓库此处写的是 /app，Redis 的数据目录实际是 /data
+</pre>
+</div>
+
+<p>
+  和第 9 章的 Compose 文件相比，主要区别在于：网络用了 <code>overlay</code> 驱动（多主机网络，第 14 章），以及 <code>deploy</code> 块里多了
+  <code>update_config</code> 和 <code>restart_policy</code> —— 这些是 Swarm 专用的编排配置，单机 Compose 大多会忽略它们。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; 加密网络的代价</div>
+  <p>加密 overlay 网络能保护应用流量的私密性，但会带来一定的性能损失，具体取决于流量类型和流向，通常在 10% 左右，最好自己测试。</p>
+</div>
+
+<h3>期望状态</h3>
+
+<p>
+  Swarm 最核心的概念是<strong>期望状态（desired state）</strong>：你希望应用是什么样子，由 Compose 文件定义。
+  本例的期望状态可以概括为：web-fe 服务 4 个副本、redis 服务 1 个副本，以及所有网络、卷和端口映射。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="Swarm 调和循环：不断比较期望状态与观察状态">
+  <rect class="bx-p" x="20" y="80" width="190" height="90" rx="12"/>
+  <text class="ttl on-p" x="115" y="106" text-anchor="middle">期望状态</text>
+  <text class="sm" x="115" y="128" text-anchor="middle">Compose 文件里写的</text>
+  <text class="mono" x="115" y="152" text-anchor="middle">web-fe × 4</text>
+  <rect class="bx-g" x="550" y="80" width="190" height="90" rx="12"/>
+  <text class="ttl on-g" x="645" y="106" text-anchor="middle">观察状态</text>
+  <text class="sm" x="645" y="128" text-anchor="middle">集群里实际在跑的</text>
+  <text class="mono" x="645" y="152" text-anchor="middle">web-fe × 3（一个挂了）</text>
+  <rect class="bx-a" x="285" y="90" width="190" height="70" rx="35"/>
+  <text class="ttl on-a" x="380" y="120" text-anchor="middle">调和循环</text>
+  <text class="sm" x="380" y="140" text-anchor="middle">不停地比较两者</text>
+  <path class="ln" d="M212 125 H281" marker-end="url(#ar)"/>
+  <path class="ln" d="M548 125 H479" marker-end="url(#ar)"/>
+  <path class="ln-a" d="M380 162 V200 H645 V174" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="512" y="220" text-anchor="middle">不一致？立刻采取行动：再启动 1 个副本</text>
+  <text class="lbl" x="380" y="36" text-anchor="middle">这就是“自我修复”的本质 —— Kubernetes 也是同样的思想</text>
+</svg>
+<figcaption>图 12-4　Swarm 永远在努力让观察状态等于期望状态</figcaption>
+</figure>
+
+<h3>部署应用</h3>
+
+<p>在管理节点的 <code>swarm-new</code> 目录下运行，把应用部署为一个叫 ddd 的 <strong>stack</strong>：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker stack deploy -c compose.yaml ddd
+Creating network ddd_counter-net
+Creating volume ddd_counter-vol
+Creating service ddd_web-fe
+Creating service ddd_redis
+
+$ docker stack ps ddd
+ID             NAME          IMAGE                             NODE   DESIRED STATE   CURRENT STATE
+pgeupeqyqg5t   ddd_redis.1   redis:alpine                      wrk2   Running         Running 8 min
+qbtkiz1p9v1n   ddd_web-fe.1  nigelpoulton/ddd-book:swarm-app   wrk1   Running         Running 8 min
+wbs2ndy22xhh   ddd_web-fe.2  nigelpoulton/ddd-book:swarm-app   mgr1   Running         Running 8 min
+skqz1mbreluo   ddd_web-fe.3  nigelpoulton/ddd-book:swarm-app   mgr2   Running         Running 8 min
+sg5u9b6t8m44   ddd_web-fe.4  nigelpoulton/ddd-book:swarm-app   mgr3   Running         Running 8 min
+
+$ docker stack services ddd
+ID             NAME         MODE         REPLICAS   IMAGE                             PORTS
+otr7927s9m1s   ddd_redis    replicated   1/1        redis:alpine
+rsm3x02o9fwc   ddd_web-fe   replicated   4/4        nigelpoulton/ddd-book:swarm-app   *:5001->8080/tcp
+</pre>
+</div>
+
+<p>
+  观察状态和期望状态一致：你要 4 个 web-fe 副本和 1 个 redis 副本，得到的正是这些。Swarm 还把 4 个 web-fe 副本均匀分配到了各个节点上。
+  用浏览器访问<strong>任意一个</strong> swarm 节点的 IP 加 5001 端口，都能看到应用。
+</p>
+
+<h2 id="manage">管理应用：命令式 vs 声明式</h2>
+
+<p>管理 Swarm 应用有两种方式：</p>
+<ul>
+  <li><strong>命令式（imperative）</strong>：直接运行 CLI 命令修改，比如用 <code>docker service scale</code> 增减副本数；</li>
+  <li><strong>声明式（declarative）</strong>：所有修改都通过 Compose 文件进行，改完文件再运行一次 <code>docker stack deploy</code>。<strong>这是推荐的方式。</strong></li>
+</ul>
+
+<p>下面这个故事说明了为什么：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="命令式修改导致配置漂移的故事">
+  <rect class="bx" x="20" y="20" width="170" height="110" rx="10"/>
+  <text class="ttl" x="105" y="44" text-anchor="middle">① 最初</text>
+  <text class="sm" x="105" y="68" text-anchor="middle">Compose 文件：</text>
+  <text class="mono" x="105" y="88" text-anchor="middle">reporting × 1</text>
+  <text class="sm" x="105" y="112" text-anchor="middle">集群：1 个副本</text>
+
+  <rect class="bx-a" x="205" y="20" width="170" height="110" rx="10"/>
+  <text class="ttl on-a" x="290" y="44" text-anchor="middle">② 年底报表高峰</text>
+  <text class="sm" x="290" y="68" text-anchor="middle">同事手动执行：</text>
+  <text class="mono" x="290" y="88" text-anchor="middle" style="font-size:10.5px">service scale … =10</text>
+  <text class="sm" x="290" y="112" text-anchor="middle">集群：10 个副本 ✓</text>
+
+  <rect class="bx-r" x="390" y="20" width="170" height="110" rx="10"/>
+  <text class="ttl on-r" x="475" y="44" text-anchor="middle">③ 配置漂移</text>
+  <text class="sm" x="475" y="68" text-anchor="middle">文件里还是 × 1</text>
+  <text class="sm" x="475" y="88" text-anchor="middle">集群里却是 × 10</text>
+  <text class="sm" x="475" y="112" text-anchor="middle">没人记得</text>
+
+  <rect class="bx-r" x="575" y="20" width="165" height="110" rx="10"/>
+  <text class="ttl on-r" x="657" y="44" text-anchor="middle">④ 事故</text>
+  <text class="sm" x="657" y="68" text-anchor="middle">你更新 catalog 服务</text>
+  <text class="sm" x="657" y="88" text-anchor="middle">stack deploy 后</text>
+  <text class="sm" x="657" y="112" text-anchor="middle">reporting 被缩回 1 个！</text>
+
+  <path class="ln" d="M192 75 H201" marker-end="url(#ar)"/>
+  <path class="ln" d="M377 75 H386" marker-end="url(#ar)"/>
+  <path class="ln" d="M562 75 H571" marker-end="url(#ar)"/>
+
+  <rect class="bx-g" x="120" y="160" width="520" height="110" rx="12"/>
+  <text class="ttl on-g" x="380" y="188" text-anchor="middle">声明式的做法</text>
+  <text class="sm" x="380" y="212" text-anchor="middle">② 这一步改成：编辑 Compose 文件 replicas: 10 → 提交 Git → docker stack deploy</text>
+  <text class="sm" x="380" y="234" text-anchor="middle">文件永远是唯一的事实来源（single source of truth）</text>
+  <text class="sm" x="380" y="256" text-anchor="middle">谁在什么时候改了什么，Git 历史里一清二楚</text>
+</svg>
+<figcaption>图 12-5　为什么要声明式管理：避免“配置漂移”</figcaption>
+</figure>
+
+<p>
+  每次 <code>docker stack deploy</code> 都会把 Compose 文件作为<strong>新的期望状态</strong>推给 Swarm。Swarm 比较它和观察状态，发现你要更新 catalog 服务，于是安排更新；
+  但同时它也发现 reporting 应该只有 1 个副本（文件里就是这么写的），于是把 10 个缩回 1 个。所以：<strong>所有修改都应该通过 Compose 文件声明式地进行，并且把 Compose 文件放进版本控制。</strong>
+</p>
+
+<h3>扩容并滚动更新</h3>
+
+<p>我们把两个修改作为一次任务完成：web-fe 副本从 4 增加到 10；web-fe 升级到新镜像 <code>swarm-appv2</code>。编辑 Compose 文件：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+services:
+  web-fe:
+    image: nigelpoulton/ddd-book:swarm-appv2     # 改成 swarm-appv2
+    command: python app.py
+    deploy:
+      replicas: 10                               # 从 4 改成 10
+</pre>
+</div>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker stack deploy -c compose.yaml ddd
+Updating service ddd_web-fe (id: rsm3x02o9fwcftt3a87fqcabq)
+Updating service ddd_redis (id: otr7927s9m1s5mkz326243kv3)
+
+$ docker stack ps ddd
+NAME              IMAGE                               NODE   DESIRED STATE   CURRENT STATE
+ddd_web-fe.1      nigelpoulton/ddd-book:swarm-app     wrk1   Running         Running 8 mins ago
+ddd_web-fe.2      nigelpoulton/ddd-book:swarm-appv2   mgr1   Running         Running 13 secs ago
+ \_ ddd_web-fe.2  nigelpoulton/ddd-book:swarm-app     mgr1   Shutdown        Shutdown 26 secs ago
+ddd_web-fe.3      nigelpoulton/ddd-book:swarm-app     mgr2   Running         Running 8 mins ago
+&lt;Snip&gt;
+</pre>
+</div>
+
+<p>
+  从输出能看到：<code>web-fe.1</code> 还在跑旧镜像；<code>web-fe.2</code> 的旧副本 26 秒前被关闭，由一个跑新镜像的新副本替代；<code>web-fe.3</code> 还没轮到。
+  Swarm 会立即添加 6 个新副本，而对原有的 4 个副本则遵守 <code>update_config</code>：每次更新 2 个，每批之间等 10 秒。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="滚动更新：每批更新 2 个副本，间隔 10 秒">
+  <text class="lbl" x="20" y="30">时间</text>
+  <path class="ln" d="M60 26 H740" marker-end="url(#ar)"/>
+  <text class="sm" x="110" y="52" text-anchor="middle">开始前</text>
+  <text class="sm" x="300" y="52" text-anchor="middle">第 1 批</text>
+  <text class="sm" x="490" y="52" text-anchor="middle">+10 秒 · 第 2 批</text>
+  <text class="sm" x="670" y="52" text-anchor="middle">完成</text>
+
+  <g>
+    <rect class="bx-a" x="60" y="66" width="100" height="26" rx="5"/><text class="sm on-a" x="110" y="84" text-anchor="middle">v1</text>
+    <rect class="bx-a" x="60" y="98" width="100" height="26" rx="5"/><text class="sm on-a" x="110" y="116" text-anchor="middle">v1</text>
+    <rect class="bx-a" x="60" y="130" width="100" height="26" rx="5"/><text class="sm on-a" x="110" y="148" text-anchor="middle">v1</text>
+    <rect class="bx-a" x="60" y="162" width="100" height="26" rx="5"/><text class="sm on-a" x="110" y="180" text-anchor="middle">v1</text>
+  </g>
+  <g>
+    <rect class="bx-g" x="250" y="66" width="100" height="26" rx="5"/><text class="sm on-g" x="300" y="84" text-anchor="middle">v2 ✓</text>
+    <rect class="bx-g" x="250" y="98" width="100" height="26" rx="5"/><text class="sm on-g" x="300" y="116" text-anchor="middle">v2 ✓</text>
+    <rect class="bx-a" x="250" y="130" width="100" height="26" rx="5"/><text class="sm on-a" x="300" y="148" text-anchor="middle">v1</text>
+    <rect class="bx-a" x="250" y="162" width="100" height="26" rx="5"/><text class="sm on-a" x="300" y="180" text-anchor="middle">v1</text>
+  </g>
+  <g>
+    <rect class="bx-g" x="440" y="66" width="100" height="26" rx="5"/><text class="sm on-g" x="490" y="84" text-anchor="middle">v2</text>
+    <rect class="bx-g" x="440" y="98" width="100" height="26" rx="5"/><text class="sm on-g" x="490" y="116" text-anchor="middle">v2</text>
+    <rect class="bx-g" x="440" y="130" width="100" height="26" rx="5"/><text class="sm on-g" x="490" y="148" text-anchor="middle">v2 ✓</text>
+    <rect class="bx-g" x="440" y="162" width="100" height="26" rx="5"/><text class="sm on-g" x="490" y="180" text-anchor="middle">v2 ✓</text>
+  </g>
+  <g>
+    <rect class="bx-g" x="620" y="66" width="100" height="26" rx="5"/><text class="sm on-g" x="670" y="84" text-anchor="middle">v2</text>
+    <rect class="bx-g" x="620" y="98" width="100" height="26" rx="5"/><text class="sm on-g" x="670" y="116" text-anchor="middle">v2</text>
+    <rect class="bx-g" x="620" y="130" width="100" height="26" rx="5"/><text class="sm on-g" x="670" y="148" text-anchor="middle">v2</text>
+    <rect class="bx-g" x="620" y="162" width="100" height="26" rx="5"/><text class="sm on-g" x="670" y="180" text-anchor="middle">v2</text>
+  </g>
+  <path class="ln-d" d="M170 125 H240"/><path class="ln-d" d="M360 125 H430"/><path class="ln-d" d="M550 125 H610"/>
+  <text class="lbl" x="380" y="220" text-anchor="middle">任何时候都有副本在提供服务 → 零停机更新；出错则按 failure_action 自动回滚</text>
+  <text class="sm" x="380" y="240" text-anchor="middle">（图中只画了原有的 4 个副本；新增的 6 个副本直接以 v2 启动）</text>
+</svg>
+<figcaption>图 12-6　滚动更新：parallelism: 2，delay: 10s</figcaption>
+</figure>
+
+<p>
+  回顾一下这次<strong>调和</strong>：Swarm 上记录的期望状态原本是“4 个运行 swarm-app 的 web-fe 副本”。你修改 Compose 文件后运行 <code>docker stack deploy</code>，推送了新的期望状态。
+  Swarm 比较后发现集群里有 4 个跑旧镜像的副本，但应该有 10 个跑新镜像的副本，于是按照 <code>update_config</code> 的规则，用 10 个新副本替换了旧的 4 个。
+  刷新浏览器，就能看到新版应用。
+</p>
+
+<h2 id="cleanup">清理</h2>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker stack rm ddd              # 不会要求确认！
+Removing service ddd_redis
+Removing service ddd_web-fe
+Removing network ddd_counter-net
+</pre>
+</div>
+
+<p>服务和网络被删除了，但卷没有 —— Swarm 把卷的生命周期和容器、服务解耦了。到运行 redis 副本的那个节点上删除卷：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker volume rm ddd_counter-vol
+</pre>
+</div>
+
+<p>要解散 swarm，在所有节点上运行 <code>docker swarm leave</code>，最后处理 Leader 节点，可能需要加 <code>--force</code>。</p>
+
+<h2 id="commands">命令速查</h2>
+
+<div class="tw"><table class="cheat">
+  <tr><th>命令</th><th>作用</th></tr>
+  <tr><td><code>docker swarm init</code></td><td>初始化新 swarm，当前节点成为第一个管理节点</td></tr>
+  <tr><td><code>docker swarm join-token worker|manager</code></td><td>显示加入为工作 / 管理节点的命令和令牌</td></tr>
+  <tr><td><code>docker swarm join --token …</code></td><td>把当前节点加入 swarm</td></tr>
+  <tr><td><code>docker node ls</code></td><td>列出所有节点及其角色、状态</td></tr>
+  <tr><td><code>docker stack deploy -c 文件 名称</code></td><td>部署或更新 Swarm 应用</td></tr>
+  <tr><td><code>docker stack ls</code></td><td>列出所有 stack 及其服务数</td></tr>
+  <tr><td><code>docker stack ps 名称</code></td><td>每个副本在哪个节点、用哪个镜像、期望状态与当前状态</td></tr>
+  <tr><td><code>docker stack services 名称</code></td><td>每个服务的模式、副本数、端口</td></tr>
+  <tr><td><code>docker service logs 服务</code></td><td>查看服务所有副本的日志</td></tr>
+  <tr><td><code>docker stack rm 名称</code></td><td>删除 Swarm 应用（不确认）</td></tr>
+  <tr><td><code>docker swarm leave [--force]</code></td><td>离开 swarm</td></tr>
+</table></div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>Docker Swarm 把多个 Docker 节点组成一个安全、高可用的集群，并提供类似 Kubernetes 的应用编排能力。</li>
+  <li>管理节点运行控制平面（用 Raft 保持一致，建议 3 或 5 个），工作节点运行应用。</li>
+  <li>Swarm 的核心是期望状态与调和：不断让观察状态追上期望状态，从而实现自我修复。</li>
+  <li>用 <code>docker stack deploy</code> 部署和更新应用；应该声明式地通过 Compose 文件修改，避免配置漂移。</li>
+  <li><code>update_config</code> 控制滚动更新节奏，<code>restart_policy</code> 控制失败副本的重启行为。</li>
+  <li>学会 Swarm，是开始学习 Kubernetes 的好起点。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>在 Play with Docker 上创建 3 个节点，搭一个 1 管理 + 2 工作的 swarm，部署本章的 stack。</li>
+    <li>在某个工作节点上用 <code>docker rm -f</code> 强行删掉一个 web-fe 容器，然后在管理节点上 <code>docker stack ps ddd</code>，观察 Swarm 如何自动补上副本。</li>
+    <li>先用 <code>docker service scale ddd_web-fe=6</code> 命令式扩容，再不改文件直接 <code>docker stack deploy</code>，亲手验证“配置漂移”被覆盖回去的现象。</li>
+    <li>把 <code>update_config.parallelism</code> 改成 1、<code>delay</code> 改成 20s，再做一次版本更新，边更新边 <code>watch docker stack ps ddd</code>。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

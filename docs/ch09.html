@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 9 章 · Compose 多容器应用 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="9">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 9 章</span>
+<h1>Compose 多容器应用</h1>
+<p class="lede">
+  真实的应用很少只有一个容器：Web 前端、API、数据库、缓存……如果每个都手敲一长串 <code>docker run</code>，很快就会失控。
+  <strong>Docker Compose</strong> 让你用一个 YAML 文件描述整套应用，然后一条命令部署、一条命令销毁。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解 Compose 解决的问题，以及它从 Fig 到 Compose v5 的演进</li>
+    <li>读懂 Compose 文件的三大顶层键：<code>services</code>、<code>networks</code>、<code>volumes</code></li>
+    <li>用 <code>docker compose up / down / ps / logs / stop / restart</code> 管理整套应用</li>
+    <li>理解 Compose 如何给资源命名，以及为什么 <code>down</code> 不删除卷</li>
+    <li>掌握环境变量、健康检查依赖、<code>watch</code>、<code>profiles</code> 等现代用法</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="tldr">一句话概括</h2>
+
+<p>现代云原生应用由许多协同工作的小服务组成，这叫<strong>微服务应用</strong>。一个微服务应用可能包含：</p>
+
+<div class="cards">
+  <div class="card"><h4>Web 前端</h4><p>用户看到的界面</p></div>
+  <div class="card"><h4>订单 · 商品目录</h4><p>业务逻辑服务</p></div>
+  <div class="card"><h4>数据存储</h4><p>数据库、缓存</p></div>
+  <div class="card"><h4>日志 · 认证 · 授权</h4><p>基础设施服务</p></div>
+</div>
+
+<p>
+  与其拼凑复杂的脚本和冗长的 docker 命令，Compose 让你把整个应用描述在一个叫 <strong>Compose 文件</strong>的 YAML 文件里，
+  然后用 <code>docker compose</code> 命令部署和管理整个应用。Compose 文件因此成了应用的重要组成部分，应该放进 Git 等版本控制系统。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="没有 Compose 与有 Compose 的对比">
+  <text class="ttl" x="185" y="24" text-anchor="middle">没有 Compose</text>
+  <rect class="bx-r" x="20" y="36" width="330" height="170" rx="12"/>
+  <text class="mono" x="36" y="62" style="font-size:11px">docker network create counter-net</text>
+  <text class="mono" x="36" y="82" style="font-size:11px">docker volume create counter-vol</text>
+  <text class="mono" x="36" y="102" style="font-size:11px">docker build -t web-fe .</text>
+  <text class="mono" x="36" y="122" style="font-size:11px">docker run -d --name redis \</text>
+  <text class="mono" x="36" y="138" style="font-size:11px">  --network counter-net -v counter-vol:/data …</text>
+  <text class="mono" x="36" y="158" style="font-size:11px">docker run -d --name web-fe -p 5001:8080 \</text>
+  <text class="mono" x="36" y="174" style="font-size:11px">  --network counter-net web-fe …</text>
+  <text class="sm on-r" x="185" y="198" text-anchor="middle">顺序、参数全靠记忆，删除还要反着来一遍</text>
+
+  <text class="ttl" x="575" y="24" text-anchor="middle">有 Compose</text>
+  <rect class="bx-g" x="410" y="36" width="330" height="170" rx="12"/>
+  <rect class="bx-p" x="430" y="52" width="130" height="60" rx="8"/>
+  <text class="ttl on-p" x="495" y="78" text-anchor="middle">compose.yaml</text>
+  <text class="sm" x="495" y="98" text-anchor="middle">声明“要什么”</text>
+  <text class="mono on-g" x="590" y="80">docker compose up</text>
+  <text class="mono on-g" x="590" y="102">docker compose down</text>
+  <text class="sm" x="575" y="140" text-anchor="middle">一条命令创建网络、卷、镜像、容器</text>
+  <text class="sm" x="575" y="160" text-anchor="middle">一条命令全部清理</text>
+  <text class="sm on-g" x="575" y="190" text-anchor="middle">文件本身就是最好的应用文档</text>
+</svg>
+<figcaption>图 9-1　命令式脚本 vs 声明式 Compose 文件</figcaption>
+</figure>
+
+<h2 id="background">Compose 的历史</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 150" role="img" aria-label="Compose 的发展历史">
+  <line class="ln" x1="40" y1="70" x2="720" y2="70"/>
+  <circle class="dot-b" cx="80" cy="70" r="7"/><circle class="dot-b" cx="240" cy="70" r="7"/><circle class="dot-b" cx="400" cy="70" r="7"/><circle class="dot-a" cx="560" cy="70" r="7"/><circle class="dot-g" cx="700" cy="70" r="8"/>
+  <text class="ttl" x="80" y="48" text-anchor="middle">Fig</text>
+  <text class="sm" x="80" y="96" text-anchor="middle">Orchard Labs</text><text class="sm" x="80" y="112" text-anchor="middle">Python 工具</text>
+  <text class="ttl" x="240" y="48" text-anchor="middle">docker-compose</text>
+  <text class="sm" x="240" y="96" text-anchor="middle">v1，被 Docker 收购</text><text class="sm" x="240" y="112" text-anchor="middle">后改名（已退役）</text>
+  <text class="ttl" x="400" y="48" text-anchor="middle">docker compose</text>
+  <text class="sm" x="400" y="96" text-anchor="middle">v2，Go 重写</text><text class="sm" x="400" y="112" text-anchor="middle">成为 CLI 插件</text>
+  <text class="ttl on-a" x="560" y="48" text-anchor="middle">Compose 规范</text>
+  <text class="sm" x="560" y="96" text-anchor="middle">compose-spec.io</text><text class="sm" x="560" y="112" text-anchor="middle">社区主导的开放标准</text>
+  <text class="ttl on-g" x="745" y="48" text-anchor="end">Compose v5</text>
+  <text class="sm" x="745" y="96" text-anchor="end">2025 年底</text><text class="sm" x="745" y="112" text-anchor="end">SDK 化 · Bake 构建</text>
+</svg>
+<figcaption>图 9-2　从 Fig 到 Compose v5</figcaption>
+</figure>
+
+<p>
+  Docker 刚诞生时，一家叫 Orchard Labs 的公司做了一个叫 <strong>Fig</strong> 的工具：用一个简单的 YAML 文件定义复杂的多容器应用，
+  再用 <code>fig</code> 命令管理整个应用生命周期。Fig 在幕后读取 YAML 文件，调用相应的 Docker 命令。
+</p>
+<p>
+  Fig 实在太好用了，Docker 公司收购了 Orchard Labs，把 Fig 改名为 Docker Compose，命令也从 <code>fig</code> 变成了 <code>docker-compose</code>。
+  后来 Compose 用 Go 重写并并入了 <code>docker</code> CLI，成为 <code>docker compose</code> 子命令。
+</p>
+<p>
+  另外还有一个 <a href="https://www.compose-spec.io/">Compose 规范</a>，把 Compose 作为多容器应用的开放标准，由社区主导，独立于 Docker 的实现。
+  Docker Compose 是这个规范的参考实现。阅读规范是学习细节的好方法。
+</p>
+
+<div class="box new">
+  <div class="t">&#10024; 最新变化：Compose v5 与过时的写法</div>
+  <ul>
+    <li><strong>Compose v5</strong>（2025 年底发布，Docker Desktop 4.92 自带 v5.5.1）跳过了 v3、v4 这两个版本号，避免和老的 Compose 文件格式 “version 2.x / 3.x” 混淆。
+      v5 可以作为 SDK 嵌入第三方软件，并且移除了内置构建器，构建统一交给 Docker Bake。</li>
+    <li>带横杠的 <code>docker-compose</code>（v1，Python 版）早已停止维护。原书清理步骤里的 <code>docker-compose down</code> 应写作 <code>docker compose down</code>。</li>
+    <li>Compose 文件顶部的 <code>version: "3.8"</code> 这一行已经<strong>过时</strong>，现在写了只会得到一个警告，直接删掉即可。</li>
+  </ul>
+</div>
+
+<h2 id="install">安装 Compose</h2>
+
+<p>所有现代 Docker 版本都预装了 Compose，不需要单独安装。验证一下：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker compose version
+Docker Compose version v5.5.1
+</pre>
+</div>
+
+<h2 id="app">示例应用</h2>
+
+<p>我们要部署的应用有两个服务、一个网络和一个卷：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="示例应用：web-fe 服务和 redis 服务通过 counter-net 网络通信，redis 挂载 counter-vol 卷">
+  <rect class="bx-b" x="20" y="100" width="130" height="70" rx="10"/>
+  <text class="ttl on-b" x="85" y="128" text-anchor="middle">浏览器</text>
+  <text class="mono" x="85" y="150" text-anchor="middle">localhost:5001</text>
+
+  <rect class="bx" x="190" y="20" width="550" height="250" rx="14"/>
+  <text class="ttl" x="210" y="44">Docker 主机 · 项目 multi-container</text>
+
+  <rect class="bx-d" x="230" y="70" width="480" height="150" rx="12"/>
+  <text class="sm" x="470" y="90" text-anchor="middle">网络 counter-net（bridge）</text>
+
+  <rect class="bx-a" x="260" y="105" width="170" height="90" rx="10"/>
+  <text class="ttl on-a" x="345" y="132" text-anchor="middle">web-fe 服务</text>
+  <text class="sm" x="345" y="154" text-anchor="middle">Python Flask</text>
+  <text class="sm" x="345" y="172" text-anchor="middle">监听 8080</text>
+
+  <rect class="bx-g" x="510" y="105" width="170" height="90" rx="10"/>
+  <text class="ttl on-g" x="595" y="132" text-anchor="middle">redis 服务</text>
+  <text class="sm" x="595" y="154" text-anchor="middle">redis:alpine</text>
+  <text class="sm" x="595" y="172" text-anchor="middle">监听 6379</text>
+
+  <path class="ln-a" d="M432 150 H506" marker-end="url(#ar-a)"/>
+  <text class="sm" x="469" y="140" text-anchor="middle">按名字</text>
+  <text class="mono" x="469" y="168" text-anchor="middle">redis</text>
+
+  <path class="ln-a" d="M152 135 H256" marker-end="url(#ar-a)"/>
+  <text class="sm" x="85" y="190" text-anchor="middle">端口 5001→8080</text>
+
+  <rect class="bx-p" x="520" y="232" width="150" height="30" rx="15"/>
+  <text class="sm on-p" x="595" y="252" text-anchor="middle">卷 counter-vol → /data</text>
+  <path class="ln-p" d="M595 197 V230"/>
+</svg>
+<figcaption>图 9-3　示例应用：一个计数器网站</figcaption>
+</figure>
+
+<p>
+  <strong>web-fe</strong> 服务运行一个 Web 服务器，每收到一次网页请求，就让 <strong>redis</strong> 服务里的计数器加 1。
+  两个服务都连到 <strong>counter-net</strong> 网络并通过它通信。redis 服务挂载了 <strong>counter-vol</strong> 卷来保存数据。
+</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ git clone https://github.com/nigelpoulton/ddd-book.git
+$ cd ddd-book/multi-container/
+$ ls -l
+drwxrwxr-x 4 ubuntu ubuntu 4096 May 21 15:53 app
+-rw-rw-r-- 1 ubuntu ubuntu  288 May 21 15:53 Dockerfile
+-rw-rw-r-- 1 ubuntu ubuntu   18 May 21 15:53 requirements.txt
+-rw-rw-r-- 1 ubuntu ubuntu  355 May 21 15:53 compose.yaml
+-rw-rw-r-- 1 ubuntu ubuntu  332 May 21 15:53 README.md
+</pre>
+</div>
+
+<ul>
+  <li><code>app</code> 目录：应用代码、视图和模板；</li>
+  <li><code>Dockerfile</code>：描述如何构建 web-fe 服务的镜像；</li>
+  <li><code>requirements.txt</code>：web-fe 的 Python 依赖（flask、redis、jinja2）；</li>
+  <li><code>compose.yaml</code>：告诉 Docker 如何部署整个应用。</li>
+</ul>
+
+<p>
+  部署时，Docker 会把应用所在目录的名字作为<strong>项目名（project name）</strong>，这里就是 <code>multi-container</code>。稍后你会看到它的用处。
+</p>
+
+<h2 id="file">Compose 文件</h2>
+
+<p>Compose 用 YAML 文件定义应用。默认文件名是 <code>compose.yaml</code> 或 <code>compose.yml</code>，也可以用 <code>-f</code> 指定其他文件。下面是本例的 Compose 文件：</p>
+
+<div class="code" data-lang="yaml" data-file="multi-container/compose.yaml">
+<pre>
+networks:                    # ← 顶层键：定义网络
+  counter-net:
+
+volumes:                     # ← 顶层键：定义卷
+  counter-vol:
+
+services:                    # ← 顶层键（必填）：定义微服务
+  web-fe:
+    build: .
+    deploy:
+      replicas: 1
+    command: python app/app.py
+    ports:
+      - target: 8080
+        published: 5001
+    networks:
+      - counter-net
+
+  redis:
+    image: redis:alpine
+    deploy:
+      replicas: 1
+    networks:
+      counter-net:
+    volumes:
+      - type: volume
+        source: counter-vol
+        target: /data
+</pre>
+</div>
+
+<p>文件有三个顶层键，每个下面是一段配置。还有更多顶层键（如 <code>secrets</code>、<code>configs</code>、<code>models</code>），但本例只用到这三个：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="Compose 文件的三个顶层键">
+  <rect class="bx-a" x="20" y="30" width="230" height="110" rx="12"/>
+  <text class="ttl on-a" x="135" y="58" text-anchor="middle">services（必填）</text>
+  <text class="sm" x="135" y="82" text-anchor="middle">每个微服务一段</text>
+  <text class="sm" x="135" y="100" text-anchor="middle">用什么镜像、端口、网络、卷</text>
+  <text class="sm" x="135" y="118" text-anchor="middle">启动命令、副本数……</text>
+  <rect class="bx-b" x="265" y="30" width="230" height="110" rx="12"/>
+  <text class="ttl on-b" x="380" y="58" text-anchor="middle">networks</text>
+  <text class="sm" x="380" y="82" text-anchor="middle">要创建哪些网络</text>
+  <text class="sm" x="380" y="100" text-anchor="middle">不写也会自动创建</text>
+  <text class="sm" x="380" y="118" text-anchor="middle">一个名为 default 的网络</text>
+  <rect class="bx-p" x="510" y="30" width="230" height="110" rx="12"/>
+  <text class="ttl on-p" x="625" y="58" text-anchor="middle">volumes</text>
+  <text class="sm" x="625" y="82" text-anchor="middle">要创建哪些卷</text>
+  <text class="sm" x="625" y="100" text-anchor="middle">生命周期独立于容器</text>
+  <text class="sm" x="625" y="118" text-anchor="middle">（第 15 章）</text>
+</svg>
+<figcaption>图 9-4　Compose 文件的骨架</figcaption>
+</figure>
+
+<h3>web-fe 服务</h3>
+
+<div class="tw"><table>
+  <tr><th>配置</th><th>含义</th></tr>
+  <tr><td><code>web-fe:</code></td><td>服务名。这个服务创建的所有容器名字里都会包含 “web-fe”</td></tr>
+  <tr><td><code>build: .</code></td><td>用当前目录的 Dockerfile 为这个服务构建镜像</td></tr>
+  <tr><td><code>deploy.replicas: 1</code></td><td>部署 1 个容器。也可以部署多个相同的副本，但本例映射了固定的主机端口，同一台主机上只能有一个容器绑定它</td></tr>
+  <tr><td><code>command: python app/app.py</code></td><td>每个容器启动时执行的命令（会覆盖镜像里的 CMD；镜像里必须有 Python 和 app.py，Dockerfile 负责保证这点）</td></tr>
+  <tr><td><code>ports:</code></td><td>把容器的 8080 端口（<code>target</code>）映射到主机的 5001 端口（<code>published</code>），等价于短写法 <code>"5001:8080"</code></td></tr>
+  <tr><td><code>networks:</code></td><td>把这个服务的容器连到 counter-net 网络。网络必须已存在，或在顶层 <code>networks</code> 键中定义</td></tr>
+</table></div>
+
+<h3>redis 服务</h3>
+
+<div class="tw"><table>
+  <tr><th>配置</th><th>含义</th></tr>
+  <tr><td><code>image: redis:alpine</code></td><td>从 Docker Hub 拉取 redis:alpine 镜像来启动容器</td></tr>
+  <tr><td><code>networks:</code></td><td>同样连到 counter-net 网络</td></tr>
+  <tr><td><code>volumes:</code></td><td>把 counter-vol 卷挂载到容器的 <code>/data</code> 目录 —— 这正是 Redis 存放数据的地方，所以删掉容器数据也不会丢</td></tr>
+</table></div>
+
+<div class="box new">
+  <div class="t">&#10024; 更正原书</div>
+  <p>原书正文里的 Compose 文件把卷挂到了 <code>target: /app</code>，但文字说明又说挂到 <code>/data</code>。Redis 的数据目录是 <code>/data</code>，作者 GitHub 仓库中的最新文件也已改为 <code>/data</code>，本教程以此为准。</p>
+</div>
+
+<h3>服务之间如何找到对方？</h3>
+
+<p>两个服务都连在 counter-net 网络上，因此可以<strong>通过服务名互相解析</strong>。看看 <code>app/app.py</code> 的开头：</p>
+
+<div class="code" data-lang="python" data-file="app/app.py">
+<pre>
+import time
+import redis
+from flask import Flask, render_template
+
+app = Flask(__name__)
+cache = redis.Redis(host='redis', port=6379)   # "redis" 就是 Compose 里的服务名
+</pre>
+</div>
+
+<p>代码里直接写 <code>host='redis'</code>，Docker 内置的 DNS 会把它解析成 redis 容器的 IP（第 13 章会讲原理）。</p>
+
+<h2 id="deploy">用 Compose 部署应用</h2>
+
+<p>在 <code>multi-container</code> 目录里运行：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker compose up --detach
+[+] Running 7/7
+ ✔ redis Pulled                                                  5.2s
+[+] Building 6.1s (11/11) FINISHED
+ &lt;Snip&gt;
+[+] Running 5/5
+ ✔ web-fe                                  Built                 0.0s
+ ✔ Network multi-container_counter-net     Created               0.0s
+ ✔ Volume "multi-container_counter-vol"    Created               0.0s
+ ✔ Container multi-container-redis-1       Started               0.3s
+ ✔ Container multi-container-web-fe-1      Started               0.4s
+</pre>
+</div>
+
+<p>
+  <code>docker compose up</code> 是部署 Compose 应用最常用的方式：它读取当前目录下的 Compose 文件，执行部署所需的所有 Docker 操作 ——
+  构建和拉取镜像、创建网络和卷、启动所有容器。<code>--detach</code>（或 <code>-d</code>）表示在后台运行。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="docker compose up 自动完成的步骤">
+  <rect class="bx-p" x="20" y="55" width="130" height="60" rx="10"/>
+  <text class="ttl on-p" x="85" y="82" text-anchor="middle">compose.yaml</text>
+  <text class="mono" x="85" y="102" text-anchor="middle">up -d</text>
+  <path class="ln-a" d="M152 85 H180" marker-end="url(#ar-a)"/>
+  <rect class="bx" x="184" y="20" width="130" height="36" rx="8"/><text class="sm" x="249" y="43" text-anchor="middle">① 拉取 redis 镜像</text>
+  <rect class="bx" x="184" y="66" width="130" height="36" rx="8"/><text class="sm" x="249" y="89" text-anchor="middle">② 构建 web-fe 镜像</text>
+  <rect class="bx" x="184" y="112" width="130" height="36" rx="8"/><text class="sm" x="249" y="135" text-anchor="middle">③ 创建网络</text>
+  <rect class="bx" x="334" y="20" width="130" height="36" rx="8"/><text class="sm" x="399" y="43" text-anchor="middle">④ 创建卷</text>
+  <rect class="bx" x="334" y="66" width="130" height="36" rx="8"/><text class="sm" x="399" y="89" text-anchor="middle">⑤ 启动 redis</text>
+  <rect class="bx" x="334" y="112" width="130" height="36" rx="8"/><text class="sm" x="399" y="135" text-anchor="middle">⑥ 启动 web-fe</text>
+  <path class="ln-g" d="M470 85 H530" marker-end="url(#ar-g)"/>
+  <rect class="bx-g" x="535" y="45" width="205" height="80" rx="12"/>
+  <text class="ttl on-g" x="637" y="75" text-anchor="middle">应用运行中</text>
+  <text class="sm" x="637" y="98" text-anchor="middle">浏览器访问 localhost:5001</text>
+</svg>
+<figcaption>图 9-5　一条 up 命令背后的自动化</figcaption>
+</figure>
+
+<p>如果 Compose 文件不叫 compose.yaml 或不在当前目录，用 <code>-f</code> 指定：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker compose -f apps/ddd-book/sample-app.yml up --detach
+</pre>
+</div>
+
+<p>应用部署好之后，你可以用普通的 docker 命令查看 Compose 创建的镜像、容器、网络和卷：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker images
+REPOSITORY               TAG      IMAGE ID       CREATED         SIZE
+redis                    alpine   f773b35a95e1   8 days ago      61.4MB
+multi-container-web-fe   latest   811f22c9edb7   2 minutes ago   99.7MB
+
+$ docker ps
+ID    COMMAND                  STATUS       PORTS                      NAMES
+61..  "python app/app.py"      Up 35 mins   0.0.0.0:5001->8080/tcp     multi-container-web-fe-1
+80..  "docker-entrypoint.…"    Up 35 mins   6379/tcp                   multi-container-redis-1
+
+$ docker network ls
+NETWORK ID     NAME                          DRIVER    SCOPE
+46100cae7441   multi-container_counter-net   bridge    local
+
+$ docker volume ls
+DRIVER    VOLUME NAME
+local     multi-container_counter-vol
+</pre>
+</div>
+
+<h3>Compose 如何给资源命名</h3>
+
+<p>注意所有资源的名字都是<strong>项目名 + 资源名</strong>组合出来的：</p>
+
+<div class="tw"><table>
+  <tr><th>资源类型</th><th>Compose 文件里的名字</th><th>实际名字</th></tr>
+  <tr><td>镜像</td><td>web-fe（build）</td><td><code>multi-container-web-fe</code></td></tr>
+  <tr><td>容器</td><td>web-fe</td><td><code>multi-container-web-fe-1</code></td></tr>
+  <tr><td>容器</td><td>redis</td><td><code>multi-container-redis-1</code></td></tr>
+  <tr><td>网络</td><td>counter-net</td><td><code>multi-container_counter-net</code></td></tr>
+  <tr><td>卷</td><td>counter-vol</td><td><code>multi-container_counter-vol</code></td></tr>
+</table></div>
+
+<p>
+  容器名末尾的数字是为多副本准备的：如果 web-fe 有 3 个副本，它们会叫 <code>-1</code>、<code>-2</code>、<code>-3</code>。
+  加上项目名前缀，同一台机器上就可以同时跑多个项目而互不冲突。想自定义项目名，用 <code>-p</code>（<code>docker compose -p myapp up</code>）或在文件顶部写 <code>name: myapp</code>。
+</p>
+
+<p>现在用浏览器访问 <code>localhost:5001</code>，多刷新几次，看计数器增加 —— 这个数字保存在 redis 服务的卷里。</p>
+
+<h2 id="manage">用 Compose 管理应用</h2>
+
+<p>记下你刷新了多少次，然后关闭应用：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker compose down
+[+] Running 3/3
+ ✔ Container multi-container-redis-1      Removed        0.2s
+ ✔ Container multi-container-web-fe-1     Removed        0.2s
+ ✔ Network multi-container_counter-net    Removed        0.2s
+
+$ docker volume ls
+DRIVER    VOLUME NAME
+local     multi-container_counter-vol      &lt;&lt;---- 卷还在！
+</pre>
+</div>
+
+<p>
+  Docker 删除了两个容器和网络，但<strong>没有删除卷</strong>。因为 Docker 知道卷里存的是重要数据，停止、重启应用时你多半想保留它们。
+  本例中 redis 把计数值存在卷里，所以重新部署后你会看到同样的数字。Docker 也保留了构建和拉取的镜像。
+</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker compose up --detach
+[+] Running 3/3
+ ✔ Network multi-container_counter-net    Created        0.2s
+ ✔ Container multi-container-redis-1      Started        0.2s
+ ✔ Container multi-container-web-fe-1     Started        0.2s
+</pre>
+</div>
+
+<p>这次启动快多了，因为镜像和卷都已存在。刷新浏览器，计数器会接着之前的数字继续。再看看其他几个管理命令：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker compose ps
+NAME                       COMMAND                  SERVICE   STATUS       PORTS
+multi-container-redis-1    "docker-entrypoint.…"    redis     Up 33 sec    6379/tcp
+multi-container-web-fe-1   "python app/app.py"      web-fe    Up 33 sec    0.0.0.0:5001->8080/tcp
+
+$ docker compose top
+multi-container-redis-1
+UID   PID     PPID    ...  CMD
+lxd   12023   11980        redis-server *:6379
+multi-container-web-fe-1
+UID   PID     PPID    ...  CMD
+root  12024   12002        python app/app.py
+root  12085   12024        /usr/local/bin/python app/app.py
+
+$ docker compose logs -f web-fe      # 跟踪某个服务的日志，Ctrl+C 退出
+</pre>
+</div>
+
+<p><code>docker compose top</code> 显示的 PID 是从 Docker 主机上看到的 PID，而不是容器内部的。</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker compose stop
+ ✔ Container multi-container-redis-1    Stopped
+ ✔ Container multi-container-web-fe-1   Stopped
+
+$ docker compose ps -a
+NAME                       SERVICE   STATUS
+multi-container-redis-1    redis     Exited (0) 25 seconds ago
+multi-container-web-fe-1   web-fe    Exited (0) 25 seconds ago
+
+$ docker compose restart
+ ✔ Container multi-container-redis-1    Started
+ ✔ Container multi-container-web-fe-1   Started
+
+$ docker compose ls
+NAME              STATUS       CONFIG FILES
+multi-container   running(2)   /Users/nigel/ddd-book/multi-container/compose.yaml
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="stop、down、down -v 删除范围对比">
+  <text class="ttl" x="20" y="24">各命令会删除什么？</text>
+  <text class="lbl" x="200" y="56" text-anchor="middle">容器</text>
+  <text class="lbl" x="320" y="56" text-anchor="middle">网络</text>
+  <text class="lbl" x="440" y="56" text-anchor="middle">卷</text>
+  <text class="lbl" x="560" y="56" text-anchor="middle">镜像</text>
+  <text class="mono" x="20" y="92">stop</text>
+  <rect class="bx-g" x="150" y="74" width="100" height="28" rx="6"/><text class="sm on-g" x="200" y="93" text-anchor="middle">停止（保留）</text>
+  <rect class="bx" x="270" y="74" width="100" height="28" rx="6"/><text class="sm" x="320" y="93" text-anchor="middle">保留</text>
+  <rect class="bx" x="390" y="74" width="100" height="28" rx="6"/><text class="sm" x="440" y="93" text-anchor="middle">保留</text>
+  <rect class="bx" x="510" y="74" width="100" height="28" rx="6"/><text class="sm" x="560" y="93" text-anchor="middle">保留</text>
+  <text class="mono" x="20" y="132">down</text>
+  <rect class="bx-r" x="150" y="114" width="100" height="28" rx="6"/><text class="sm on-r" x="200" y="133" text-anchor="middle">删除</text>
+  <rect class="bx-r" x="270" y="114" width="100" height="28" rx="6"/><text class="sm on-r" x="320" y="133" text-anchor="middle">删除</text>
+  <rect class="bx" x="390" y="114" width="100" height="28" rx="6"/><text class="sm" x="440" y="133" text-anchor="middle">保留</text>
+  <rect class="bx" x="510" y="114" width="100" height="28" rx="6"/><text class="sm" x="560" y="133" text-anchor="middle">保留</text>
+  <text class="mono" x="20" y="172">down -v --rmi all</text>
+  <rect class="bx-r" x="150" y="154" width="100" height="28" rx="6"/><text class="sm on-r" x="200" y="173" text-anchor="middle">删除</text>
+  <rect class="bx-r" x="270" y="154" width="100" height="28" rx="6"/><text class="sm on-r" x="320" y="173" text-anchor="middle">删除</text>
+  <rect class="bx-r" x="390" y="154" width="100" height="28" rx="6"/><text class="sm on-r" x="440" y="173" text-anchor="middle">删除</text>
+  <rect class="bx-r" x="510" y="154" width="100" height="28" rx="6"/><text class="sm on-r" x="560" y="173" text-anchor="middle">删除</text>
+  <text class="sm" x="630" y="93">数据还在</text>
+  <text class="sm" x="630" y="133">数据还在</text>
+  <text class="sm on-r" x="630" y="173">数据没了</text>
+  <text class="lbl" x="380" y="210" text-anchor="middle">修改了 Compose 文件？restart 不会应用改动，要重新 up（Compose 会只重建有变化的服务）</text>
+</svg>
+<figcaption>图 9-6　stop / down / down -v 的区别</figcaption>
+</figure>
+
+<p>这只是一个简单的例子，Compose 能部署和管理复杂得多的应用。下面介绍几个原书没有展开、但日常必用的功能。</p>
+
+<h2 id="modern">现代 Compose 必会功能</h2>
+
+<h3>环境变量与 .env 文件</h3>
+
+<p>Compose 会自动读取同目录下的 <code>.env</code> 文件，你可以在 Compose 文件里用 <code>${变量}</code> 引用它，也可以把变量注入容器：</p>
+
+<div class="vs">
+  <div class="old"><div class="h">.env</div>
+  <div class="code" data-lang="env"><pre>
+REDIS_TAG=8-alpine
+WEB_PORT=5001
+</pre></div></div>
+  <div class="new"><div class="h">compose.yaml</div>
+  <div class="code" data-lang="yaml"><pre>
+services:
+  redis:
+    image: redis:${REDIS_TAG:-alpine}
+  web-fe:
+    ports:
+      - "${WEB_PORT}:8080"
+    environment:
+      REDIS_HOST: redis
+    env_file: [ app.env ]
+</pre></div></div>
+</div>
+
+<p><code>${REDIS_TAG:-alpine}</code> 表示“变量没设置时用 alpine”。用 <code>docker compose config</code> 可以看到变量替换后的最终配置，排错非常有用。</p>
+
+<div class="box warn">
+  <div class="t">&#9888; .env 不要提交到 Git</div>
+  <p>.env 里常常有密码，记得把它加进 <code>.gitignore</code> 和 <code>.dockerignore</code>。敏感数据更好的做法是用 Compose 的 <code>secrets</code>（第 16 章）。</p>
+</div>
+
+<h3>健康检查与启动顺序</h3>
+
+<p>
+  <code>depends_on</code> 控制启动顺序。但简单写法只保证“redis 容器<strong>已启动</strong>”，不保证“redis <strong>已经可以接受连接</strong>”。
+  结合 <code>healthcheck</code> 和 <code>condition: service_healthy</code> 才能真正等到依赖就绪：
+</p>
+
+<div class="code" data-lang="yaml" data-file="compose.yaml">
+<pre>
+services:
+  web-fe:
+    build: .
+    depends_on:
+      redis:
+        condition: service_healthy     # 等 redis 健康了再启动我
+        restart: true                  # redis 重启时，我也跟着重启
+  redis:
+    image: redis:alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 150" role="img" aria-label="依赖健康检查的启动时序">
+  <line class="ln" x1="120" y1="50" x2="720" y2="50"/>
+  <line class="ln" x1="120" y1="110" x2="720" y2="110"/>
+  <text class="ttl on-g" x="20" y="55">redis</text>
+  <text class="ttl on-a" x="20" y="115">web-fe</text>
+  <rect class="bx-d" x="130" y="36" width="200" height="28" rx="6"/><text class="sm" x="230" y="55" text-anchor="middle">starting（健康检查中）</text>
+  <rect class="bx-g" x="340" y="36" width="380" height="28" rx="6"/><text class="sm on-g" x="530" y="55" text-anchor="middle">healthy ✓</text>
+  <rect class="bx" x="130" y="96" width="200" height="28" rx="6"/><text class="sm" x="230" y="115" text-anchor="middle">等待中……</text>
+  <rect class="bx-a" x="340" y="96" width="380" height="28" rx="6"/><text class="sm on-a" x="530" y="115" text-anchor="middle">启动，第一次连接就成功</text>
+  <path class="ln-g" d="M340 66 V92" marker-end="url(#ar-g)"/>
+</svg>
+<figcaption>图 9-7　condition: service_healthy 让依赖真正就绪后再启动</figcaption>
+</figure>
+
+<h3>docker compose watch：边改代码边看效果</h3>
+
+<p>开发时每改一行代码都要重新构建镜像太慢了。Compose 的 <code>develop.watch</code> 可以监视本地文件，自动同步到容器或触发重建：</p>
+
+<div class="code" data-lang="yaml" data-file="compose.yaml">
+<pre>
+services:
+  web-fe:
+    build: .
+    develop:
+      watch:
+        - action: sync               # 改了 app/ 下的代码 → 直接同步进容器
+          path: ./app
+          target: /app/app
+        - action: rebuild            # 改了依赖清单 → 重新构建镜像
+          path: requirements.txt
+</pre>
+</div>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker compose watch             # 或 docker compose up --watch
+</pre>
+</div>
+
+<h3>profiles：可选服务</h3>
+
+<p>有些服务（比如调试工具、数据库管理界面）只在需要时才启动，可以给它们加 profile：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+services:
+  redis-insight:
+    image: redis/redisinsight
+    profiles: [ debug ]            # 默认 up 不会启动它
+</pre>
+</div>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker compose --profile debug up -d
+</pre>
+</div>
+
+<h3>其他有用的功能一览</h3>
+
+<div class="tw"><table>
+  <tr><th>功能</th><th>写法</th><th>用途</th></tr>
+  <tr><td>重启策略</td><td><code>restart: unless-stopped</code></td><td>容器崩溃或主机重启后自动拉起（第 7 章）</td></tr>
+  <tr><td>拆分文件</td><td><code>include:</code> / 多个 <code>-f</code></td><td>把大型应用拆成多个 Compose 文件；叠加开发/生产差异配置</td></tr>
+  <tr><td>资源限制</td><td><code>deploy.resources.limits</code></td><td>限制 CPU / 内存</td></tr>
+  <tr><td>AI 模型</td><td>顶层 <code>models:</code></td><td>声明应用依赖的大模型（第 10 章）</td></tr>
+  <tr><td>发布应用</td><td><code>docker compose publish</code></td><td>把 Compose 应用作为 OCI 制品推送到仓库</td></tr>
+</table></div>
+
+<h2 id="cleanup">清理</h2>
+
+<p>停止并删除整个应用。<code>--volumes</code> 会删除应用的所有卷，<code>--rmi all</code> 会删除它的所有镜像：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker compose down --volumes --rmi all
+[+] Running 6/6
+ ✔ Container multi-container-web-fe-1     Removed
+ ✔ Container multi-container-redis-1      Removed
+ ✔ Volume multi-container_counter-vol     Removed
+ ✔ Image multi-container-web-fe:latest    Removed
+ ✔ Image redis:alpine                     Removed
+ ✔ Network multi-container_counter-net    Removed
+</pre>
+</div>
+
+<h2 id="commands">命令速查</h2>
+
+<div class="tw"><table class="cheat">
+  <tr><th>命令</th><th>作用</th></tr>
+  <tr><td><code>docker compose up -d</code></td><td>部署应用：构建/拉取镜像，创建网络、卷、容器；<code>-f</code> 指定文件，<code>--build</code> 强制重新构建</td></tr>
+  <tr><td><code>docker compose ps [-a]</code></td><td>列出应用的容器、状态、命令和端口</td></tr>
+  <tr><td><code>docker compose logs -f [服务]</code></td><td>查看 / 跟踪日志</td></tr>
+  <tr><td><code>docker compose top</code></td><td>列出每个容器内的进程</td></tr>
+  <tr><td><code>docker compose exec 服务 sh</code></td><td>在某个服务的容器里执行命令</td></tr>
+  <tr><td><code>docker compose stop</code> / <code>restart</code></td><td>停止但不删除 / 重启（不会应用 Compose 文件的改动）</td></tr>
+  <tr><td><code>docker compose down [-v] [--rmi all]</code></td><td>停止并删除容器和网络；可选删除卷和镜像</td></tr>
+  <tr><td><code>docker compose ls</code></td><td>列出本机所有 Compose 项目</td></tr>
+  <tr><td><code>docker compose config</code></td><td>显示合并、变量替换后的最终配置</td></tr>
+  <tr><td><code>docker compose watch</code></td><td>监视文件变化，自动同步或重建</td></tr>
+</table></div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>Compose 让你在一个声明式 YAML 文件里定义多容器应用，然后用一条命令部署和管理它。</li>
+  <li>Compose 文件定义应用需要的服务、网络、卷、机密等；它也是非常好的应用文档，应该和代码一起放进版本控制。</li>
+  <li>Compose 用“项目名 + 资源名”给资源命名；<code>down</code> 默认保留卷和镜像，数据不会因为重新部署而丢失。</li>
+  <li>同一网络上的服务可以直接用服务名互相访问。</li>
+  <li>现代 Compose 还提供 .env 变量、健康检查依赖、watch 热更新、profiles 等功能。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>部署本章的计数器应用，刷新几次，然后 <code>docker compose down</code> 再 <code>up</code>，确认计数没丢；再用 <code>down -v</code> 然后 <code>up</code>，确认计数归零。</li>
+    <li>给 redis 服务加上本章的 healthcheck，给 web-fe 加上 <code>condition: service_healthy</code>，用 <code>docker compose ps</code> 观察 redis 的 STATUS 从 <code>(health: starting)</code> 变成 <code>(healthy)</code>。</li>
+    <li>把 web-fe 的端口改成从 .env 文件读取，运行 <code>docker compose config</code> 确认替换结果。</li>
+    <li>配置 <code>develop.watch</code>，运行 <code>docker compose watch</code>，修改 <code>app/templates/index.html</code> 的文字，刷新浏览器看效果。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

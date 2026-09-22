@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 1 章 · 容器的前世今生 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="1">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 1 章</span>
+<h1>容器的前世今生</h1>
+<p class="lede">
+  在学任何 Docker 命令之前，先搞清楚一个问题：<strong>我们为什么需要容器？</strong>
+  答案藏在过去二十年服务器的演化史里 —— 从“一台服务器只跑一个应用”，到虚拟机，再到容器。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解“一台服务器一个应用”时代的浪费问题</li>
+    <li>说清虚拟机解决了什么、又带来了什么新问题</li>
+    <li>理解容器为什么比虚拟机更轻、更快、更便携</li>
+    <li>知道 Windows 容器、Linux 容器、Mac 上的容器分别是怎么回事</li>
+    <li>对 Wasm、AI、Kubernetes 与 Docker 的关系有个初步印象</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="old-days">过去：一台服务器一个应用</h2>
+
+<p>
+  应用程序是现代企业的发动机：应用一挂，生意就停。而应用都跑在服务器上。
+</p>
+<p>
+  在很长一段时间里，我们<strong>一台服务器只能跑一个应用</strong>。原因很简单：几个应用挤在同一个操作系统里，
+  它们会抢同一个端口、依赖同一个库的不同版本、一个崩了可能把另一个拖下水。所以最稳妥的做法是：每上线一个新应用，就买一台新服务器。
+</p>
+<p>
+  问题是，没人能准确预估一个新应用需要多少性能。买小了，应用扛不住，客户流失；买大了，只是浪费钱。
+  于是大家都选择“宁大勿小”，结果机房里堆满了<strong>利用率只有 5%–10%</strong> 的昂贵服务器。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="一台服务器一个应用时代：每台服务器利用率很低">
+  <text class="ttl" x="20" y="26">每个应用独占一台物理服务器</text>
+  <g>
+    <rect class="bx" x="20"  y="44" width="160" height="150" rx="10"/>
+    <rect class="bx-a" x="36" y="160" width="128" height="20" rx="4"/>
+    <text class="sm on-a" x="100" y="174" text-anchor="middle">App A · 8%</text>
+    <text class="lbl" x="100" y="70" text-anchor="middle">服务器 1</text>
+    <text class="sm" x="100" y="110" text-anchor="middle">大量闲置的</text>
+    <text class="sm" x="100" y="126" text-anchor="middle">CPU / 内存</text>
+  </g>
+  <g>
+    <rect class="bx" x="205" y="44" width="160" height="150" rx="10"/>
+    <rect class="bx-b" x="221" y="150" width="128" height="30" rx="4"/>
+    <text class="sm on-b" x="285" y="170" text-anchor="middle">App B · 12%</text>
+    <text class="lbl" x="285" y="70" text-anchor="middle">服务器 2</text>
+    <text class="sm" x="285" y="110" text-anchor="middle">大量闲置</text>
+  </g>
+  <g>
+    <rect class="bx" x="390" y="44" width="160" height="150" rx="10"/>
+    <rect class="bx-g" x="406" y="164" width="128" height="16" rx="4"/>
+    <text class="sm on-g" x="470" y="156" text-anchor="middle">App C · 5%</text>
+    <text class="lbl" x="470" y="70" text-anchor="middle">服务器 3</text>
+    <text class="sm" x="470" y="110" text-anchor="middle">大量闲置</text>
+  </g>
+  <rect class="bx-r" x="580" y="70" width="160" height="96" rx="10"/>
+  <text class="ttl on-r" x="660" y="98" text-anchor="middle">后果</text>
+  <text class="sm" x="660" y="120" text-anchor="middle">买服务器的钱 ↑</text>
+  <text class="sm" x="660" y="137" text-anchor="middle">电费、机房空间 ↑</text>
+  <text class="sm" x="660" y="154" text-anchor="middle">资源利用率 ↓↓</text>
+</svg>
+<figcaption>图 1-1　“一台服务器一个应用”：大部分硬件资源在睡觉</figcaption>
+</figure>
+
+<h2 id="vm">虚拟机来了</h2>
+
+<p>
+  就在这时，VMware 公司带来了<strong>虚拟机（VM）</strong>。虚拟机技术让我们可以在一台物理服务器上<strong>安全地</strong>运行多个应用：
+  一个叫 <strong>Hypervisor（虚拟机管理程序）</strong> 的软件把物理服务器的 CPU、内存、磁盘、网卡“切”成好几份虚拟的，
+  每份打包成一台看起来和真服务器一模一样的虚拟机，然后在每台虚拟机里装操作系统、装应用。
+</p>
+<p>
+  这是一次革命。企业可以把新应用部署到现有服务器的空闲资源上，不用再每次都买新机器。
+</p>
+
+<h2 id="vm-tax">虚拟机的烦恼</h2>
+
+<p>虚拟机很好，但远不完美。它最大的问题是：<strong>每台虚拟机都需要一个完整的操作系统</strong>。这意味着：</p>
+
+<ul>
+  <li><strong>每个操作系统都要吃资源。</strong>CPU、内存、磁盘被操作系统本身占掉一大块，而这些资源我们本来想留给应用。</li>
+  <li><strong>每个操作系统都要打补丁。</strong>100 台虚拟机 = 100 个要维护、要升级、要打安全补丁的系统。</li>
+  <li><strong>每个操作系统都要监控。</strong>运维的工作量随虚拟机数量线性增长。</li>
+  <li><strong>启动慢。</strong>开一台虚拟机要经历完整的操作系统启动流程，通常以分钟计。</li>
+  <li><strong>不便携。</strong>虚拟机镜像动辄几个 GB 到几十 GB，想从一个平台搬到另一个平台很麻烦。</li>
+</ul>
+
+<p>我们把这些额外开销叫做<strong>“虚拟机税”</strong>。</p>
+
+<h2 id="containers">容器来了</h2>
+
+<p>
+  当大多数公司还在享受虚拟机红利时，Google 这样的超大规模互联网公司早已转向了<strong>容器</strong>。
+</p>
+<p>
+  容器模型最关键的一点是：<strong>所有容器共享宿主机的操作系统（准确地说，是共享宿主机的内核）</strong>。
+  每个容器里只装应用和它的依赖，不需要自己的操作系统。所以同一台主机上，能跑的容器数量远远多于虚拟机 ——
+  一台能跑 10 台虚拟机的主机，可能能跑 50 个容器。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 360" role="img" aria-label="虚拟机模型与容器模型对比">
+  <!-- 左：虚拟机 -->
+  <text class="ttl" x="185" y="24" text-anchor="middle">虚拟机模型：虚拟化“硬件”</text>
+  <rect class="bx-a" x="30"  y="44" width="100" height="36" rx="6"/><text class="sm on-a" x="80"  y="67" text-anchor="middle">App A</text>
+  <rect class="bx-a" x="135" y="44" width="100" height="36" rx="6"/><text class="sm on-a" x="185" y="67" text-anchor="middle">App B</text>
+  <rect class="bx-a" x="240" y="44" width="100" height="36" rx="6"/><text class="sm on-a" x="290" y="67" text-anchor="middle">App C</text>
+  <rect class="bx-r" x="30"  y="84" width="100" height="50" rx="6"/><text class="sm on-r" x="80"  y="106" text-anchor="middle">完整操作系统</text><text class="sm on-r" x="80" y="122" text-anchor="middle">（含内核）</text>
+  <rect class="bx-r" x="135" y="84" width="100" height="50" rx="6"/><text class="sm on-r" x="185" y="106" text-anchor="middle">完整操作系统</text><text class="sm on-r" x="185" y="122" text-anchor="middle">（含内核）</text>
+  <rect class="bx-r" x="240" y="84" width="100" height="50" rx="6"/><text class="sm on-r" x="290" y="106" text-anchor="middle">完整操作系统</text><text class="sm on-r" x="290" y="122" text-anchor="middle">（含内核）</text>
+  <rect class="bx-d" x="30"  y="138" width="100" height="30" rx="6"/><text class="sm" x="80"  y="157" text-anchor="middle">虚拟硬件</text>
+  <rect class="bx-d" x="135" y="138" width="100" height="30" rx="6"/><text class="sm" x="185" y="157" text-anchor="middle">虚拟硬件</text>
+  <rect class="bx-d" x="240" y="138" width="100" height="30" rx="6"/><text class="sm" x="290" y="157" text-anchor="middle">虚拟硬件</text>
+  <rect class="bx-p" x="30" y="178" width="310" height="40" rx="8"/><text class="ttl on-p" x="185" y="203" text-anchor="middle">Hypervisor</text>
+  <rect class="bx" x="30" y="226" width="310" height="40" rx="8"/><text class="ttl" x="185" y="251" text-anchor="middle">物理服务器（CPU / 内存 / 磁盘 / 网卡）</text>
+  <text class="sm" x="185" y="290" text-anchor="middle">3 个应用 = 3 个操作系统要维护</text>
+
+  <line class="ln-d" x1="380" y1="40" x2="380" y2="300"/>
+
+  <!-- 右：容器 -->
+  <text class="ttl" x="575" y="24" text-anchor="middle">容器模型：虚拟化“操作系统”</text>
+  <rect class="bx-a" x="420" y="44" width="72" height="36" rx="6"/><text class="sm on-a" x="456" y="67" text-anchor="middle">App A</text>
+  <rect class="bx-a" x="497" y="44" width="72" height="36" rx="6"/><text class="sm on-a" x="533" y="67" text-anchor="middle">App B</text>
+  <rect class="bx-a" x="574" y="44" width="72" height="36" rx="6"/><text class="sm on-a" x="610" y="67" text-anchor="middle">App C</text>
+  <rect class="bx-a" x="651" y="44" width="72" height="36" rx="6"/><text class="sm on-a" x="687" y="67" text-anchor="middle">App D</text>
+  <rect class="bx-a" x="420" y="84" width="72" height="36" rx="6"/><text class="sm on-a" x="456" y="107" text-anchor="middle">App E</text>
+  <rect class="bx-a" x="497" y="84" width="72" height="36" rx="6"/><text class="sm on-a" x="533" y="107" text-anchor="middle">App F</text>
+  <rect class="bx-a" x="574" y="84" width="72" height="36" rx="6"/><text class="sm on-a" x="610" y="107" text-anchor="middle">App G</text>
+  <rect class="bx-a" x="651" y="84" width="72" height="36" rx="6"/><text class="sm on-a" x="687" y="107" text-anchor="middle">App H</text>
+  <rect class="bx-g" x="420" y="138" width="303" height="30" rx="6"/><text class="sm on-g" x="571" y="157" text-anchor="middle">容器运行时（如 Docker）</text>
+  <rect class="bx-b" x="420" y="178" width="303" height="40" rx="8"/><text class="ttl on-b" x="571" y="203" text-anchor="middle">宿主机操作系统（唯一的内核）</text>
+  <rect class="bx" x="420" y="226" width="303" height="40" rx="8"/><text class="ttl" x="571" y="251" text-anchor="middle">物理服务器</text>
+  <text class="sm" x="571" y="290" text-anchor="middle">8 个应用 = 只有 1 个操作系统要维护</text>
+
+  <text class="lbl" x="380" y="340" text-anchor="middle">同样的硬件，容器能塞下更多应用 —— 因为省掉了每个应用各自的操作系统</text>
+</svg>
+<figcaption>图 1-2　虚拟机把硬件切成份；容器把操作系统切成份</figcaption>
+</figure>
+
+<p>共享宿主机操作系统带来了一串好处：</p>
+
+<div class="tw"><table>
+  <tr><th></th><th>虚拟机</th><th>容器</th></tr>
+  <tr><td>体积</td><td>几 GB 到几十 GB（含完整 OS）</td><td>几 MB 到几百 MB（只含应用和依赖）</td></tr>
+  <tr><td>启动时间</td><td>分钟级（要启动整个 OS）</td><td>秒级甚至毫秒级（OS 已经在跑了）</td></tr>
+  <tr><td>密度</td><td>一台主机跑几台到几十台</td><td>一台主机跑几十到几百个</td></tr>
+  <tr><td>要维护的 OS 数量</td><td>每台 VM 一个</td><td>整台主机只有一个</td></tr>
+  <tr><td>隔离强度</td><td>强（每台 VM 有独立内核）</td><td>较弱（共享内核），需要额外安全技术加固</td></tr>
+</table></div>
+
+<div class="box note">
+  <div class="t">&#9432; 共享内核是把双刃剑</div>
+  <p>
+    所有容器共享宿主机内核，这带来了性能和便携性，但也意味着：如果某个恶意容器利用了内核漏洞，理论上可能影响同一台主机上的其他容器。
+    好在今天的容器平台都默认启用了 SELinux/AppArmor、seccomp、capabilities 等安全技术（第 16 章会讲），
+    再加上镜像漏洞扫描，容器的安全性已经可以做得非常好。今天，<strong>绝大多数新应用都首选容器</strong>。
+  </p>
+</div>
+
+<h2 id="linux">Linux 容器与 Docker</h2>
+
+<p>
+  现代容器技术诞生于 Linux 世界，是很多人多年努力的结晶。比如 Google 就向 Linux 内核贡献了大量和容器相关的技术。
+  支撑容器的几项核心内核技术是：
+</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#129521;</span><h4>命名空间 namespaces</h4><p>负责<strong>隔离</strong>：让每个容器以为自己独占进程树、网络、文件系统、主机名。</p></div>
+  <div class="card"><span class="ic">&#128207;</span><h4>控制组 cgroups</h4><p>负责<strong>限制</strong>：规定每个容器最多能用多少 CPU、内存、磁盘 I/O。</p></div>
+  <div class="card"><span class="ic">&#128273;</span><h4>能力 capabilities</h4><p>负责<strong>降权</strong>：把 root 的超级权限拆成几十个小权限，只给容器需要的那几个。</p></div>
+</div>
+
+<p>
+  但问题是，这些技术在很长时间里<strong>极其复杂</strong>，只有少数专家会用。直到 2013 年 <strong>Docker</strong> 出现，
+  它用一条简单的 <code>docker run</code> 命令和对开发者友好的工作流，把容器带给了所有人。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="服务器技术演进时间线">
+  <line class="ln" x1="40" y1="80" x2="720" y2="80"/>
+  <circle class="dot-b" cx="80"  cy="80" r="7"/>
+  <circle class="dot-b" cx="240" cy="80" r="7"/>
+  <circle class="dot-a" cx="400" cy="80" r="8"/>
+  <circle class="dot-g" cx="560" cy="80" r="7"/>
+  <circle class="dot-g" cx="700" cy="80" r="7"/>
+  <text class="ttl" x="80"  y="56" text-anchor="middle">物理机时代</text>
+  <text class="sm"  x="80"  y="108" text-anchor="middle">一台服务器一个应用</text>
+  <text class="ttl" x="240" y="56" text-anchor="middle">虚拟机 · 2000s</text>
+  <text class="sm"  x="240" y="108" text-anchor="middle">VMware、Hypervisor</text>
+  <text class="ttl on-a" x="400" y="56" text-anchor="middle">Docker · 2013</text>
+  <text class="sm"  x="400" y="108" text-anchor="middle">容器变得人人可用</text>
+  <text class="ttl" x="560" y="56" text-anchor="middle">Kubernetes · 2014+</text>
+  <text class="sm"  x="560" y="108" text-anchor="middle">大规模编排容器</text>
+  <text class="ttl" x="700" y="56" text-anchor="middle">Wasm · AI</text>
+  <text class="sm"  x="700" y="108" text-anchor="middle">新的工作负载</text>
+  <text class="lbl" x="380" y="150" text-anchor="middle">每一代都更小、更快、更便携；它们不是互相取代，而是在今天的云里共存</text>
+</svg>
+<figcaption>图 1-3　服务器技术的演进</figcaption>
+</figure>
+
+<h2 id="platforms">Windows、Mac 与容器</h2>
+
+<p>
+  理解容器时有一条<strong>最重要的规则</strong>：<strong>容器共享宿主机的内核</strong>。由此可以直接推出：
+</p>
+<ul>
+  <li>容器化的 <strong>Linux 应用</strong>需要一个 <strong>Linux 内核</strong>来运行；</li>
+  <li>容器化的 <strong>Windows 应用</strong>需要一个 <strong>Windows 内核</strong>来运行。</li>
+</ul>
+
+<p>那 Mac 和 Windows 电脑上怎么跑 Linux 容器呢？答案是：<strong>在后台悄悄开一台轻量的 Linux 虚拟机</strong>。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="不同操作系统上运行 Linux 容器的方式">
+  <text class="ttl" x="125" y="24" text-anchor="middle">Linux 主机</text>
+  <rect class="bx-a" x="30" y="40" width="190" height="40" rx="6"/><text class="sm on-a" x="125" y="65" text-anchor="middle">Linux 容器 × N</text>
+  <rect class="bx-b" x="30" y="86" width="190" height="40" rx="6"/><text class="sm on-b" x="125" y="111" text-anchor="middle">Linux 内核（直接用）</text>
+  <text class="sm" x="125" y="150" text-anchor="middle">最直接、性能最好</text>
+  <text class="sm" x="125" y="166" text-anchor="middle">生产环境几乎都是这种</text>
+
+  <text class="ttl" x="380" y="24" text-anchor="middle">Mac</text>
+  <rect class="bx-a" x="285" y="40" width="190" height="40" rx="6"/><text class="sm on-a" x="380" y="65" text-anchor="middle">Linux 容器 × N</text>
+  <rect class="bx-b" x="285" y="86" width="190" height="40" rx="6"/><text class="sm on-b" x="380" y="111" text-anchor="middle">轻量 Linux 虚拟机</text>
+  <rect class="bx" x="285" y="132" width="190" height="36" rx="6"/><text class="sm" x="380" y="155" text-anchor="middle">macOS（Darwin 内核）</text>
+  <text class="sm" x="380" y="190" text-anchor="middle">没有“Mac 容器”这种东西</text>
+
+  <text class="ttl" x="635" y="24" text-anchor="middle">Windows</text>
+  <rect class="bx-a" x="540" y="40" width="92" height="40" rx="6"/><text class="sm on-a" x="586" y="58" text-anchor="middle">Linux</text><text class="sm on-a" x="586" y="72" text-anchor="middle">容器</text>
+  <rect class="bx-g" x="638" y="40" width="92" height="86" rx="6"/><text class="sm on-g" x="684" y="78" text-anchor="middle">Windows</text><text class="sm on-g" x="684" y="94" text-anchor="middle">容器</text>
+  <rect class="bx-b" x="540" y="86" width="92" height="40" rx="6"/><text class="sm on-b" x="586" y="104" text-anchor="middle">WSL 2</text><text class="sm on-b" x="586" y="118" text-anchor="middle">Linux 内核</text>
+  <rect class="bx" x="540" y="132" width="190" height="36" rx="6"/><text class="sm" x="635" y="155" text-anchor="middle">Windows 内核</text>
+  <text class="sm" x="635" y="190" text-anchor="middle">两种都能跑，但 Linux 容器占绝大多数</text>
+
+  <text class="lbl" x="380" y="232" text-anchor="middle">记住：Linux 容器永远跑在某个 Linux 内核上 —— 要么是宿主机的，要么是后台虚拟机的</text>
+</svg>
+<figcaption>图 1-4　不同平台上的容器</figcaption>
+</figure>
+
+<ul>
+  <li><strong>Windows：</strong>Windows 10/11 和所有现代 Windows Server 都原生支持 Windows 容器。
+    同时它们还能通过 <strong>WSL 2</strong>（Windows Subsystem for Linux）运行 Linux 容器，所以 Windows 电脑是开发 Linux 容器的好平台。</li>
+  <li><strong>Mac：</strong>世界上<strong>没有“Mac 容器”</strong>。但 Mac 是非常好的容器开发平台：Docker Desktop 会在 Mac 上运行一个轻量 Linux 虚拟机，
+    Docker 就跑在这台虚拟机里。Podman Desktop、Rancher Desktop、OrbStack、Colima 等工具也是同样的思路。</li>
+</ul>
+
+<p>
+  尽管 Windows 容器投入了大量研发，但现实中<strong>几乎所有容器都是 Linux 容器</strong> —— 更小、更快、工具更丰富。
+  本教程的所有示例也都是 Linux 容器。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 术语：容器化应用</div>
+  <p><strong>容器化应用（containerized app）</strong>指的就是“以容器形式运行的应用”。把一个应用变成这样的过程叫<strong>容器化（containerize）</strong>，第 8 章会详细讲。</p>
+</div>
+
+<h2 id="wasm">Wasm 又是什么？</h2>
+
+<p>
+  <strong>Wasm（WebAssembly）</strong>是一种现代的二进制指令格式。你用喜欢的语言写程序，编译成 Wasm 二进制文件，
+  它就能在任何有 Wasm 运行时的地方运行 —— 而且比容器更小、更快、更安全、更便携。
+</p>
+<p>
+  不过 Wasm 应用目前限制还很多，很多标准仍在制定中，生态也远不如容器成熟。所以容器依然是云原生应用的主流形态。
+  未来更可能的局面是：<strong>虚拟机、容器、Wasm 在同一朵云里并存</strong>，各自干自己最擅长的事。
+</p>
+
+<div class="box new">
+  <div class="t">&#10024; 最新变化：Docker Desktop 的 Wasm 功能已弃用</div>
+  <p>
+    原书用一整章（本教程第 11 章）讲 Docker + Wasm。但在 2025 年之后，Docker 官方已将 Docker Desktop 中的
+    <strong>Wasm workloads 功能标记为弃用（deprecated）</strong>，不再积极维护，并会在未来版本中移除。
+    Wasm 技术本身仍在发展（比如 Spin、wasmtime、WASI 0.2），只是 Docker Desktop 不再是运行它的推荐方式。第 11 章会详细说明。
+  </p>
+</div>
+
+<h2 id="ai">Docker 与 AI</h2>
+
+<p>
+  开发者和企业正在使用越来越多的 AI 应用，而 Docker 连续多年在 Stack Overflow 开发者调查中被评为最常用、最想用的开发工具。
+</p>
+<p>
+  但让容器里的程序访问 GPU 等 AI 加速硬件非常困难：每家硬件厂商都有自己的驱动和 SDK，整个行业不可能为每一种都做容器适配。
+  所以 Docker 推出了 <strong>Docker Model Runner（DMR）</strong>：<em>在容器之外</em>直接在宿主机上运行本地大模型，
+  让模型能直接用上宿主机的硬件，同时又和 Docker 的工具链（CLI、Compose、Docker Hub）无缝集成。第 10 章会专门讲它。
+</p>
+
+<div class="box new">
+  <div class="t">&#10024; 最新变化：Model Runner 已经走出 Docker Desktop</div>
+  <p>
+    原书写作时 DMR 还是 Docker Desktop（Mac / Windows）的实验功能。到 2026 年，DMR 已经支持 <strong>Linux 上的 Docker Engine</strong>，
+    后端除了 llama.cpp 还有 <strong>vLLM</strong>（高吞吐）和 <strong>Diffusers</strong>（图像生成），
+    并同时提供 OpenAI、Anthropic、Ollama 兼容的 API。
+  </p>
+</div>
+
+<h2 id="k8s">那 Kubernetes 呢？</h2>
+
+<p>
+  <strong>Kubernetes</strong> 是部署和管理容器化应用的行业标准平台。你可以把它理解成“管理成百上千个容器的操作系统”。
+</p>
+<p>
+  早期版本的 Kubernetes 用 Docker 来启动和停止容器，而新版本改用了 <strong>containerd</strong> ——
+  它是从 Docker 中拆分出来的、专门为 Kubernetes 等平台优化过的精简运行时（第 5 章详细讲）。
+</p>
+
+<div class="box key">
+  <div class="t">&#9733; 你只需要记住</div>
+  <p><strong>用 Docker 构建的镜像，可以直接在 Kubernetes 上运行。</strong>因为它们都遵循同一套 OCI 标准（第 2 章）。
+  学好 Docker，就是学 Kubernetes 最好的起点。</p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 120" role="img" aria-label="本章小结：三个时代">
+  <rect class="bx" x="20" y="20" width="220" height="80" rx="10"/>
+  <text class="ttl" x="130" y="46" text-anchor="middle">物理机</text>
+  <text class="sm" x="130" y="68" text-anchor="middle">一台一个应用</text>
+  <text class="sm" x="130" y="84" text-anchor="middle">问题：浪费</text>
+  <rect class="bx-b" x="270" y="20" width="220" height="80" rx="10"/>
+  <text class="ttl on-b" x="380" y="46" text-anchor="middle">虚拟机</text>
+  <text class="sm" x="380" y="68" text-anchor="middle">一台多个应用</text>
+  <text class="sm" x="380" y="84" text-anchor="middle">问题：每个都要一个 OS</text>
+  <rect class="bx-a" x="520" y="20" width="220" height="80" rx="10"/>
+  <text class="ttl on-a" x="630" y="46" text-anchor="middle">容器</text>
+  <text class="sm" x="630" y="68" text-anchor="middle">共享一个内核</text>
+  <text class="sm" x="630" y="84" text-anchor="middle">更小、更快、更便携</text>
+  <path class="ln-a" d="M242 60 H266" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M492 60 H516" marker-end="url(#ar-a)"/>
+</svg>
+<figcaption>图 1-5　一图看懂本章</figcaption>
+</figure>
+
+<ul>
+  <li>过去每个应用都要一台专用的、性能过剩的服务器，浪费严重。</li>
+  <li>虚拟机让一台服务器能安全地跑多个应用，但每台虚拟机都要一个完整操作系统，这就是“虚拟机税”。</li>
+  <li>容器共享宿主机内核，因此更小、更快、更便携；但早期容器技术非常复杂，直到 Docker 出现才让它变得简单。</li>
+  <li>Linux 容器需要 Linux 内核，Windows 容器需要 Windows 内核；Mac 和 Windows 通过后台的 Linux 虚拟机运行 Linux 容器。</li>
+  <li>Wasm 和 AI 是新的方向，Docker 生态也在围绕它们演进；Docker 镜像可以直接跑在 Kubernetes 上。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>用自己的话向一个不懂技术的朋友解释：“虚拟机”和“容器”的区别是什么？（提示：公寓楼 vs 独栋别墅的比喻很好用。）</li>
+    <li>如果一台服务器上跑 20 个应用，分别用虚拟机和容器，你需要维护多少个操作系统？</li>
+    <li>思考：为什么在 Mac 上用 Docker Desktop 运行 <code>docker version</code> 时，Server 部分显示的 OS 是 <code>linux</code> 而不是 <code>darwin</code>？（第 3 章揭晓答案。）</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,787 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 6 章 · 镜像 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="6">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 6 章</span>
+<h1>镜像</h1>
+<p class="lede">
+  镜像是 Docker 世界里的“安装包”。本章深入镜像：它是什么、从哪里来、怎么命名、内部如何分层、
+  为什么标签不可靠而摘要可靠、一个标签如何同时服务 ARM 和 x86 电脑，以及怎样扫描漏洞和删除镜像。
+  自己构建镜像的方法留到第 8 章。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解镜像是“只读的构建期对象”，容器是“可写的运行期对象”</li>
+    <li>看懂完整的镜像名：<code>仓库地址/用户名/仓库名:标签</code></li>
+    <li>理解镜像分层、层共享和联合文件系统</li>
+    <li>理解标签（tag）和摘要（digest）的区别，知道什么时候该用摘要</li>
+    <li>理解多架构镜像背后的 manifest list</li>
+    <li>会用 <code>pull</code>、<code>images</code>、<code>inspect</code>、<code>history</code>、<code>rmi</code>、<code>scout</code></li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="tldr">一句话概括</h2>
+
+<p>先说明一下：<strong>镜像、Docker 镜像、容器镜像、OCI 镜像</strong>指的都是同一个东西，本教程会混用。</p>
+
+<p>
+  镜像是一个<strong>只读的包</strong>，里面包含运行一个应用所需的一切：应用代码、依赖、最小化的操作系统组件，以及元数据。
+  一个镜像可以启动多个容器。
+</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#128421;</span><h4>运维视角</h4><p>镜像像<strong>虚拟机模板</strong>。虚拟机模板是一台“停止的虚拟机”，镜像就是一个“停止的容器”。</p></div>
+  <div class="card"><span class="ic">&#128187;</span><h4>开发视角</h4><p>镜像像<strong>类（class）</strong>。一个类可以创建多个对象，一个镜像可以启动多个容器。</p></div>
+</div>
+
+<p>
+  获取镜像最简单的方式是从<strong>镜像仓库（registry）</strong>拉取，最常用的仓库是 <a href="https://hub.docker.com">Docker Hub</a>。
+  镜像由多个独立的<strong>层（layer）</strong>堆叠而成，Docker 把它们呈现为一个统一的整体。
+  镜像通常很小：官方 NGINX 镜像约 80 MB（压缩后），官方 Redis 约 40 MB。不过 Windows 镜像可能非常大。
+</p>
+
+<h2 id="intro">镜像与容器的关系</h2>
+
+<p>
+  镜像是<strong>构建期（build-time）</strong>的产物，容器是<strong>运行期（run-time）</strong>的产物。
+  <code>docker run</code> 是从镜像启动容器最常用的方式。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="一个镜像可以启动多个容器">
+  <text class="sm" x="120" y="24" text-anchor="middle">构建期</text>
+  <text class="sm" x="560" y="24" text-anchor="middle">运行期</text>
+  <rect class="bx-a" x="40" y="60" width="160" height="110" rx="12"/>
+  <text class="ttl on-a" x="120" y="92" text-anchor="middle">镜像</text>
+  <text class="sm" x="120" y="114" text-anchor="middle">只读 read-only</text>
+  <text class="mono" x="120" y="140" text-anchor="middle">nginx:latest</text>
+
+  <path class="ln-a" d="M202 115 L420 60"  marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M202 115 L420 115" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M202 115 L420 170" marker-end="url(#ar-a)"/>
+  <text class="mono" x="300" y="106" text-anchor="middle">docker run</text>
+
+  <rect class="bx-g" x="425" y="38"  width="280" height="44" rx="8"/><text class="lbl on-g" x="565" y="65" text-anchor="middle">容器 1（可读写）</text>
+  <rect class="bx-g" x="425" y="93"  width="280" height="44" rx="8"/><text class="lbl on-g" x="565" y="120" text-anchor="middle">容器 2（可读写）</text>
+  <rect class="bx-g" x="425" y="148" width="280" height="44" rx="8"/><text class="lbl on-g" x="565" y="175" text-anchor="middle">容器 3（可读写）</text>
+  <text class="lbl" x="380" y="220" text-anchor="middle">只要还有容器在用这个镜像，就不能删除它</text>
+</svg>
+<figcaption>图 6-1　一个镜像，多个容器</figcaption>
+</figure>
+
+<p>
+  容器一旦运行起来，就和它的镜像绑定了：在删除所有使用该镜像的容器之前，你无法删除这个镜像。
+</p>
+
+<h3>镜像为什么这么小</h3>
+
+<p>容器被设计成只运行<strong>一个应用或微服务</strong>，所以镜像里只应该有应用代码和依赖，不该有构建工具、排障工具这些“可有可无”的东西。</p>
+<ul>
+  <li><strong>没有多余的东西。</strong>官方 Alpine Linux 镜像只有 3 MB 左右 —— 它不带六种 shell、三个包管理器和一堆“十年用一次”的工具。
+    越来越多的镜像甚至连 shell 和包管理器都不带：应用运行时用不到的，镜像里就不放。这种镜像叫<strong>精简镜像（slim image）</strong>。</li>
+  <li><strong>没有内核。</strong>容器使用宿主机的内核，所以镜像里的操作系统部分通常只是一些文件系统对象。人们常说镜像里只有“刚刚够用的操作系统”（just enough OS）。</li>
+</ul>
+
+<h2 id="pull">拉取镜像</h2>
+
+<p>
+  Docker 主机上存放镜像的地方叫<strong>本地仓库</strong>或<strong>镜像缓存</strong>。全新安装时它是空的。
+  如果你用 Docker Desktop，它位于那台 Linux 虚拟机里。
+</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker pull redis
+Using default tag: latest                      &lt;&lt;---- 默认使用 latest 标签
+latest: Pulling from library/redis             &lt;&lt;---- 默认从 Docker Hub 拉取
+08df40659127: Download complete                &lt;&lt;---- 拉取一个层
+4f4fb700ef54: Already exists                   &lt;&lt;---- 这个层本地已经有了
+4fe7fa4aab04: Download complete
+57dea0f129a5: Download complete
+&lt;Snip&gt;
+Digest: sha256:76d5908f5e19fcdd73daf956a38826f790336ee4707d9028f32b24ad9ac72c08
+Status: Downloaded newer image for redis:latest
+docker.io/library/redis:latest                 &lt;&lt;---- docker.io 就是 Docker Hub
+</pre>
+</div>
+
+<p>从这段输出能读出两个重要信息：</p>
+<ol>
+  <li><strong>Docker 很“有主见”。</strong>你没指定标签，它就假设你要 <code>latest</code>；你没指定仓库地址，它就假设从 Docker Hub 拉取。这两个默认值都可以覆盖。</li>
+  <li><strong>层可以共享。</strong>这个镜像有 8 层，但 Docker 只拉了 7 层，因为其中一层本地已经有了（被别的镜像用过）。Docker 足够聪明，只拉取它还没有的层。</li>
+</ol>
+
+<div class="box note">
+  <div class="t">&#9432; Docker Hub 拉取频率限制</div>
+  <p>
+    Docker Hub 对匿名拉取有频率限制（按 IP 计算，每小时次数很有限），登录后额度会高很多。如果你看到
+    <code>toomanyrequests: You have reached your pull rate limit</code>，先运行 <code>docker login</code>。
+    具体额度以 <a href="https://docs.docker.com/docker-hub/usage/">Docker Hub 官方文档</a>为准。
+  </p>
+</div>
+
+<h2 id="registry">镜像仓库</h2>
+
+<p>
+  镜像集中存放在叫<strong>镜像仓库（registry）</strong>的地方。它的职责是安全地存储镜像，并让不同环境都能方便地访问。
+  它在“构建 → 分享 → 运行”流水线中处于核心位置：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="镜像仓库在构建、分享、运行流程中的核心地位">
+  <rect class="bx-b" x="20" y="70" width="160" height="60" rx="10"/>
+  <text class="ttl on-b" x="100" y="96" text-anchor="middle">开发者电脑</text>
+  <text class="sm" x="100" y="116" text-anchor="middle">docker build</text>
+  <path class="ln-a" d="M182 100 H290" marker-end="url(#ar-a)"/>
+  <text class="mono" x="236" y="90" text-anchor="middle">push</text>
+  <rect class="bx-a" x="295" y="40" width="170" height="120" rx="14"/>
+  <text class="ttl on-a" x="380" y="72" text-anchor="middle">镜像仓库</text>
+  <text class="sm" x="380" y="96" text-anchor="middle">Docker Hub</text>
+  <text class="sm" x="380" y="114" text-anchor="middle">GHCR · ECR · ACR</text>
+  <text class="sm" x="380" y="132" text-anchor="middle">Harbor（私有）…</text>
+  <path class="ln-g" d="M467 70 L580 40"  marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M467 100 L580 100" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M467 130 L580 160" marker-end="url(#ar-g)"/>
+  <text class="mono" x="520" y="92" text-anchor="middle">pull</text>
+  <rect class="bx-g" x="585" y="20"  width="155" height="40" rx="8"/><text class="lbl on-g" x="662" y="45" text-anchor="middle">测试环境</text>
+  <rect class="bx-g" x="585" y="80"  width="155" height="40" rx="8"/><text class="lbl on-g" x="662" y="105" text-anchor="middle">生产服务器</text>
+  <rect class="bx-g" x="585" y="140" width="155" height="40" rx="8"/><text class="lbl on-g" x="662" y="165" text-anchor="middle">同事的电脑</text>
+</svg>
+<figcaption>图 6-2　镜像仓库是“构建—分享—运行”的中枢</figcaption>
+</figure>
+
+<p>
+  现代镜像仓库大多实现了 OCI 分发规范（所以也叫 <strong>OCI 仓库</strong>），同时兼容 Docker Registry v2 API，
+  因此都能用 Docker CLI 以同样的方式操作。有些还提供镜像扫描、与构建流水线集成等高级功能。
+</p>
+
+<p>仓库的组织结构是：<strong>一个镜像仓库（registry）包含多个镜像库（repository），一个镜像库包含多个镜像（用标签区分）</strong>。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="镜像仓库、镜像库和镜像的层级结构">
+  <rect class="bx" x="20" y="20" width="720" height="195" rx="14"/>
+  <text class="ttl" x="40" y="46">Registry 镜像仓库（如 docker.io）</text>
+  <rect class="bx-b" x="40"  y="62" width="215" height="138" rx="10"/>
+  <text class="ttl on-b" x="147" y="86" text-anchor="middle">Repository: redis</text>
+  <rect class="bx-a" x="58"  y="100" width="180" height="26" rx="6"/><text class="mono on-a" x="148" y="118" text-anchor="middle">redis:latest</text>
+  <rect class="bx-a" x="58"  y="132" width="180" height="26" rx="6"/><text class="mono on-a" x="148" y="150" text-anchor="middle">redis:8.2</text>
+  <rect class="bx-a" x="58"  y="164" width="180" height="26" rx="6"/><text class="mono on-a" x="148" y="182" text-anchor="middle">redis:alpine</text>
+  <rect class="bx-b" x="272" y="62" width="215" height="138" rx="10"/>
+  <text class="ttl on-b" x="379" y="86" text-anchor="middle">Repository: nginx</text>
+  <rect class="bx-a" x="290" y="100" width="180" height="26" rx="6"/><text class="mono on-a" x="380" y="118" text-anchor="middle">nginx:latest</text>
+  <rect class="bx-a" x="290" y="132" width="180" height="26" rx="6"/><text class="mono on-a" x="380" y="150" text-anchor="middle">nginx:1.29</text>
+  <rect class="bx-b" x="504" y="62" width="216" height="138" rx="10"/>
+  <text class="ttl on-b" x="612" y="86" text-anchor="middle">Repository: alpine</text>
+  <rect class="bx-a" x="522" y="100" width="180" height="26" rx="6"/><text class="mono on-a" x="612" y="118" text-anchor="middle">alpine:latest</text>
+</svg>
+<figcaption>图 6-3　Registry → Repository → Image</figcaption>
+</figure>
+
+<h3>官方镜像库与非官方镜像库</h3>
+
+<p>
+  Docker Hub 有<strong>官方镜像库（Docker Official Images）</strong>的概念：由 Docker 和软件厂商共同审核和维护，
+  应该是最新的、高质量的、安全的、文档齐全的。它们很好认：位于 Docker Hub 命名空间的<strong>顶层</strong>，并带有绿色的
+  <em>Docker Official Image</em> 徽章。例如：
+</p>
+<ul>
+  <li>nginx：<a href="https://hub.docker.com/_/nginx">hub.docker.com/_/nginx</a></li>
+  <li>redis：<a href="https://hub.docker.com/_/redis">hub.docker.com/_/redis</a></li>
+  <li>alpine、busybox、mongo、postgres、python、node……</li>
+</ul>
+
+<p>
+  其他镜像则位于某个用户或组织的<strong>二级命名空间</strong>下，比如 <code>nigelpoulton/tu-demo</code>。
+  另外还有带 <em>Verified Publisher</em>（认证发布者）徽章的商业厂商镜像。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 永远不要盲目信任来自互联网的软件</div>
+  <p>
+    非官方镜像库里有很多好镜像，但你应该<strong>默认假设非官方镜像不安全</strong>。即使是官方镜像，使用前也应保持谨慎（比如先做漏洞扫描，见本章后文）。
+  </p>
+</div>
+
+<h2 id="naming">镜像命名与标签</h2>
+
+<p>大多数时候你都是通过名字来使用镜像，而名字本身包含了很多信息。一个<strong>完全限定的镜像名</strong>长这样：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="完全限定的镜像名的组成部分">
+  <text class="mono" x="380" y="70" text-anchor="middle" style="font-size:24px">
+    <tspan style="fill:var(--blue)">docker.io</tspan><tspan style="fill:var(--fg-faint)">/</tspan><tspan style="fill:var(--green)">library</tspan><tspan style="fill:var(--fg-faint)">/</tspan><tspan style="fill:var(--accent)">redis</tspan><tspan style="fill:var(--fg-faint)">:</tspan><tspan style="fill:var(--purple)">latest</tspan>
+  </text>
+  <path class="ln-b" d="M200 82 V112"/>
+  <path class="ln-g" d="M325 82 V112"/>
+  <path class="ln-a" d="M435 82 V112"/>
+  <path class="ln-p" d="M545 82 V112"/>
+  <rect class="bx-b" x="120" y="116" width="160" height="62" rx="8"/>
+  <text class="ttl on-b" x="200" y="138" text-anchor="middle">仓库地址</text>
+  <text class="sm" x="200" y="156" text-anchor="middle">registry</text>
+  <text class="sm" x="200" y="171" text-anchor="middle">省略则默认 docker.io</text>
+  <rect class="bx-g" x="290" y="116" width="72" height="62" rx="8"/>
+  <text class="ttl on-g" x="326" y="138" text-anchor="middle">用户</text>
+  <text class="sm" x="326" y="156" text-anchor="middle">/组织</text>
+  <text class="sm" x="326" y="171" text-anchor="middle">官方=library</text>
+  <rect class="bx-a" x="372" y="116" width="126" height="62" rx="8"/>
+  <text class="ttl on-a" x="435" y="138" text-anchor="middle">镜像库名</text>
+  <text class="sm" x="435" y="156" text-anchor="middle">repository</text>
+  <text class="sm" x="435" y="171" text-anchor="middle">必填</text>
+  <rect class="bx-p" x="508" y="116" width="132" height="62" rx="8"/>
+  <text class="ttl on-p" x="574" y="138" text-anchor="middle">标签</text>
+  <text class="sm" x="574" y="156" text-anchor="middle">tag</text>
+  <text class="sm" x="574" y="171" text-anchor="middle">省略则默认 latest</text>
+  <text class="lbl" x="380" y="24" text-anchor="middle">你输入 “redis”，Docker 自动补全成下面这个完整名字</text>
+</svg>
+<figcaption>图 6-4　完全限定的镜像名</figcaption>
+</figure>
+
+<p>拉取官方镜像最简单，只需要 <code>镜像库名:标签</code>：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker pull redis:8.2           # 官方 redis 库里标签为 8.2 的镜像
+$ docker pull busybox:glibc       # 官方 busybox 库里标签为 glibc 的镜像
+$ docker pull alpine              # 官方 alpine 库里标签为 latest 的镜像
+</pre>
+</div>
+
+<p>两个要点：</p>
+<ul>
+  <li>不写标签就默认 <code>latest</code>。如果这个库<strong>没有</strong> <code>latest</code> 标签，命令会失败。</li>
+  <li><strong><code>latest</code> 并不保证是最新的镜像！</strong>它只是一个普通的标签名，由维护者自己决定指向哪个镜像。</li>
+</ul>
+
+<p>拉取非官方镜像，要在前面加上 Docker Hub 用户名或组织名；拉取其他仓库的镜像，要再在前面加上仓库的域名：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker pull nigelpoulton/tu-demo:v2                 # Docker Hub 上的个人镜像
+$ docker pull ghcr.io/regclient/regsync:latest        # GitHub Container Registry 上的镜像
+latest: Pulling from regclient/regsync
+f140ae7f526a: Download complete
+&lt;Snip&gt;
+ghcr.io/regclient/regsync:latest
+</pre>
+</div>
+
+<p>从 GHCR 拉取的体验和 Docker Hub 一模一样，因为 GHCR 同样实现了 OCI 分发规范。</p>
+
+<h3>一个镜像，多个标签</h3>
+
+<p>一个镜像可以有任意多个标签。下面的输出看起来像三个镜像，但仔细看 <code>IMAGE ID</code>，其实只有两个：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker images
+REPOSITORY             TAG      IMAGE ID       CREATED          SIZE
+nigelpoulton/tu-demo   latest   b4210d0aa52f   2 days ago       115MB
+nigelpoulton/tu-demo   v1       b4210d0aa52f   2 days ago       115MB
+nigelpoulton/tu-demo   v2       6ba12825d092   12 minutes ago   115MB
+</pre>
+</div>
+
+<p>这里 <code>latest</code> 和 <code>v1</code> 指向同一个镜像，而它比 <code>v2</code> 还旧 —— 这正是“<code>latest</code> 不一定最新”的活生生的例子。</p>
+
+<h2 id="layers">镜像与层</h2>
+
+<p>镜像是一组松散关联的<strong>只读层</strong>，每一层包含一个或多个文件。Docker 负责把它们堆叠起来，呈现为一个统一的镜像。</p>
+
+<p>查看层信息有三种方式：拉取时的输出、<code>docker inspect</code>、<code>docker history</code>。</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker pull node:latest
+latest: Pulling from library/node
+952132ac251a: Pull complete
+82659f8f1b76: Pull complete
+c19118ca682d: Pull complete
+8296858250fe: Pull complete
+24e0251a0e2c: Pull complete
+Digest: sha256:f4691c96e6bbaa99d...28ae95a60369c506dd6e6f6ab
+</pre>
+</div>
+
+<p>每一行 <code>Pull complete</code> 都代表一个层。<code>docker inspect</code> 能以 SHA256 哈希的形式列出这些层：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker inspect node:latest
+[
+  {
+    "Id": "sha256:bd3d4369ae.......fa2645f5699037d7d8c6b415a10",
+    "RepoTags": [ "node:latest" ],
+    &lt;Snip&gt;
+    "RootFS": {
+      "Type": "layers",
+      "Layers": [
+        "sha256:c8a75145fc...894129005e461a43875a094b93412",
+        "sha256:c6f2b330b6...7214ed6aac305dd03f70b95cdc610",
+        "sha256:055757a193...3a9565d78962c7f368d5ac5984998",
+        "sha256:4837348061...12695f548406ea77feb5074e195e3",
+        "sha256:0cad5e07ba...4bae4cfc66b376265e16c32a0aae9"
+      ]
+    }
+  }
+]
+</pre>
+</div>
+
+<p>
+  <code>docker history</code> 显示的是镜像的<strong>构建历史</strong>，而不是严格的层列表：有些 Dockerfile 指令（如 <code>ENV</code>、<code>EXPOSE</code>、<code>CMD</code>、<code>ENTRYPOINT</code>）
+  只添加元数据，不创建层（第 8 章详细讲）。
+</p>
+
+<h3>基础层与层的堆叠</h3>
+
+<p>
+  所有镜像都从一个<strong>基础层（base layer）</strong>开始，每添加新内容就增加一层。举个简化的例子：公司规定所有应用都必须基于官方 Ubuntu 24.04 镜像构建，
+  那么 Ubuntu 就是基础层；安装公司认可的 Python 版本会增加第二层；应用源代码是第三层。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="三层镜像：Ubuntu 基础层、Python 层、应用代码层">
+  <rect class="bx-g" x="200" y="30"  width="360" height="50" rx="8"/><text class="ttl on-g" x="380" y="54" text-anchor="middle">第 3 层：应用源代码</text><text class="sm" x="380" y="71" text-anchor="middle">COPY . /app</text>
+  <rect class="bx-b" x="200" y="90"  width="360" height="50" rx="8"/><text class="ttl on-b" x="380" y="114" text-anchor="middle">第 2 层：Python 运行时</text><text class="sm" x="380" y="131" text-anchor="middle">RUN apt-get install python3</text>
+  <rect class="bx-a" x="200" y="150" width="360" height="50" rx="8"/><text class="ttl on-a" x="380" y="174" text-anchor="middle">第 1 层（基础层）：Ubuntu 24.04</text><text class="sm" x="380" y="191" text-anchor="middle">FROM ubuntu:24.04</text>
+  <path class="ln-d" d="M580 30 H620 V200 H580"/>
+  <text class="ttl" x="640" y="110">一个镜像</text>
+  <text class="sm" x="640" y="130">= 所有层按构建</text>
+  <text class="sm" x="640" y="146">顺序堆叠</text>
+  <text class="sm" x="40" y="60">后加的层</text>
+  <text class="sm" x="40" y="76">在上面</text>
+  <path class="ln" d="M70 190 V90" marker-end="url(#ar)"/>
+  <text class="lbl" x="380" y="235" text-anchor="middle">每一层都是独立存储的对象；镜像本身只是“用哪些层、怎么叠”的元数据</text>
+</svg>
+<figcaption>图 6-5　一个三层镜像（简化示例）</figcaption>
+</figure>
+
+<p>
+  镜像是所有层按构建顺序叠加的结果。如果上层有一个文件和下层的文件同名同路径，<strong>上层的文件会遮住下层的</strong>。
+  这就是“修改”镜像的方式：不改动旧层，而是添加一个包含改动的新层。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="上层文件遮盖下层同名文件，合并成统一视图">
+  <text class="ttl" x="200" y="24" text-anchor="middle">三个独立的层</text>
+  <rect class="bx-g" x="60" y="40" width="280" height="50" rx="8"/>
+  <text class="sm on-g" x="12" y="70">第 3 层</text>
+  <rect class="bx" x="240" y="52" width="80" height="28" rx="5"/><text class="sm" x="280" y="71" text-anchor="middle">文件 7</text>
+  <text class="sm" x="150" y="70" text-anchor="middle">（文件 5 的新版本）</text>
+
+  <rect class="bx-b" x="60" y="100" width="280" height="50" rx="8"/>
+  <text class="sm on-b" x="12" y="130">第 2 层</text>
+  <rect class="bx" x="80"  y="112" width="70" height="28" rx="5"/><text class="sm" x="115" y="131" text-anchor="middle">文件 4</text>
+  <rect class="bx-r" x="160" y="112" width="70" height="28" rx="5"/><text class="sm on-r" x="195" y="131" text-anchor="middle">文件 5</text>
+  <rect class="bx" x="250" y="112" width="70" height="28" rx="5"/><text class="sm" x="285" y="131" text-anchor="middle">文件 6</text>
+
+  <rect class="bx-a" x="60" y="160" width="280" height="50" rx="8"/>
+  <text class="sm on-a" x="12" y="190">第 1 层</text>
+  <rect class="bx" x="80"  y="172" width="70" height="28" rx="5"/><text class="sm" x="115" y="191" text-anchor="middle">文件 1</text>
+  <rect class="bx" x="160" y="172" width="70" height="28" rx="5"/><text class="sm" x="195" y="191" text-anchor="middle">文件 2</text>
+  <rect class="bx" x="250" y="172" width="70" height="28" rx="5"/><text class="sm" x="285" y="191" text-anchor="middle">文件 3</text>
+
+  <path class="ln-a" d="M360 125 H430" marker-end="url(#ar-a)"/>
+  <text class="sm" x="395" y="115" text-anchor="middle">存储驱动</text>
+  <text class="sm" x="395" y="145" text-anchor="middle">合并</text>
+
+  <text class="ttl" x="590" y="24" text-anchor="middle">容器看到的统一视图</text>
+  <rect class="bx-p" x="440" y="60" width="300" height="130" rx="12"/>
+  <rect class="bx" x="460" y="80"  width="80" height="30" rx="5"/><text class="sm" x="500" y="100" text-anchor="middle">文件 1</text>
+  <rect class="bx" x="550" y="80"  width="80" height="30" rx="5"/><text class="sm" x="590" y="100" text-anchor="middle">文件 2</text>
+  <rect class="bx" x="640" y="80"  width="80" height="30" rx="5"/><text class="sm" x="680" y="100" text-anchor="middle">文件 3</text>
+  <rect class="bx" x="460" y="130" width="80" height="30" rx="5"/><text class="sm" x="500" y="150" text-anchor="middle">文件 4</text>
+  <rect class="bx-g" x="550" y="130" width="80" height="30" rx="5"/><text class="sm on-g" x="590" y="150" text-anchor="middle">文件 7</text>
+  <rect class="bx" x="640" y="130" width="80" height="30" rx="5"/><text class="sm" x="680" y="150" text-anchor="middle">文件 6</text>
+  <text class="lbl" x="380" y="245" text-anchor="middle">7 个文件，但统一视图里只有 6 个：文件 7 遮住了正下方的文件 5</text>
+</svg>
+<figcaption>图 6-6　层的堆叠与遮盖</figcaption>
+</figure>
+
+<p>
+  在底层，Docker 用<strong>存储驱动（storage driver）</strong>把这些层堆叠起来，呈现为一个统一的文件系统。
+  传统上几乎所有 Docker 主机都用 <code>overlay2</code> 驱动（还有 zfs、btrfs、vfs 等选择）。
+  无论用哪个驱动，开发者和用户的体验都是一样的。
+</p>
+
+<div class="box new">
+  <div class="t">&#10024; 最新变化：snapshotter 取代 graph driver</div>
+  <p>
+    在 Docker Engine 29 的全新安装中，层的管理交给了 containerd 的 <strong>snapshotter</strong>（默认是 <code>overlayfs</code> snapshotter），
+    原理和 overlay2 一样，都是基于 Linux 的 OverlayFS 联合文件系统。区别在于镜像数据现在由 containerd 管理，
+    因此能原生保存<strong>多平台镜像</strong>和<strong>镜像证明（SBOM、来源证明）</strong>。你可以用 <code>docker info</code> 查看自己用的是哪种。
+  </p>
+</div>
+
+<h3>层共享</h3>
+
+<p>多个镜像可以共享同一个层，这节省了磁盘空间，也加快了拉取速度。前面拉取 redis 时出现的 <code>Already exists</code> 就是这个原因。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="两个镜像共享同一个层">
+  <rect class="bx-b" x="80" y="20" width="220" height="130" rx="12"/>
+  <text class="ttl on-b" x="190" y="42" text-anchor="middle">镜像 A：redis</text>
+  <rect class="bx" x="100" y="54" width="180" height="26" rx="5"/><text class="sm" x="190" y="72" text-anchor="middle">层 25d3…</text>
+  <rect class="bx" x="100" y="86" width="180" height="26" rx="5"/><text class="sm" x="190" y="104" text-anchor="middle">层 e5d4…</text>
+
+  <rect class="bx-g" x="460" y="20" width="220" height="130" rx="12"/>
+  <text class="ttl on-g" x="570" y="42" text-anchor="middle">镜像 B：portainer</text>
+  <rect class="bx" x="480" y="54" width="180" height="26" rx="5"/><text class="sm" x="570" y="72" text-anchor="middle">层 9ab1…</text>
+  <rect class="bx" x="480" y="86" width="180" height="26" rx="5"/><text class="sm" x="570" y="104" text-anchor="middle">层 77cd…</text>
+
+  <rect class="bx-a" x="280" y="160" width="200" height="36" rx="8"/>
+  <text class="mono on-a" x="380" y="183" text-anchor="middle">共享层 4f4fb700ef54</text>
+  <path class="ln-a" d="M190 150 V178 H276" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M570 150 V178 H484" marker-end="url(#ar-a)"/>
+  <text class="lbl" x="380" y="130" text-anchor="middle">磁盘上只存一份</text>
+</svg>
+<figcaption>图 6-7　两个镜像共享同一层</figcaption>
+</figure>
+
+<p>镜像仓库那边也一样：仓库里存了很多相似的镜像，但任何一个层都只存一份。</p>
+
+<h2 id="digest">用摘要拉取镜像</h2>
+
+<p>
+  到目前为止，我们都用名字（标签）来操作镜像。这是最常见的方式，但有个问题：<strong>标签是随意的、可变的</strong>。
+  你可以把错误的镜像打上某个标签，也可以把新镜像打上和旧镜像一样的标签。最典型的就是 <code>latest</code>：一年前拉取的 <code>alpine:latest</code> 和今天拉取的肯定不是同一个。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 一个真实的灾难场景</div>
+  <p>
+    你的生产环境有很多容器在用 <code>golftrack:1.5</code>，突然收到警告：这个镜像有严重漏洞。你构建了修复版，然后……
+    <strong>把它推送到了同一个库、用了同一个标签 <code>1.5</code></strong>。旧镜像被覆盖了，现在你没有好办法知道哪些生产容器用的是有漏洞的旧版、哪些是修好的新版 —— 它们的标签一模一样！
+  </p>
+</div>
+
+<p>
+  <strong>镜像摘要（digest）</strong>来救场了。Docker 使用<strong>内容寻址存储（content addressable storage）</strong>模型：
+  每个镜像都有一个根据其内容计算出来的加密哈希值，叫做摘要。因为它是内容的哈希：
+</p>
+<ul>
+  <li>两个不同的镜像<strong>不可能</strong>有相同的摘要；</li>
+  <li>镜像只要有任何改动，摘要<strong>必然</strong>改变。</li>
+</ul>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="标签是可以移动的便利贴，摘要是镜像内容的指纹">
+  <rect class="bx-a" x="40" y="30" width="200" height="40" rx="8"/><text class="mono on-a" x="140" y="55" text-anchor="middle">golftrack:1.5</text>
+  <text class="sm" x="140" y="90" text-anchor="middle">标签 = 可移动的便利贴</text>
+  <path class="ln-r" d="M200 72 L330 130" marker-end="url(#ar-r)"/>
+  <text class="sm on-r" x="248" y="118">昨天</text>
+  <path class="ln-g" d="M200 72 L560 130" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="400" y="92">今天被改成指向这里</text>
+
+  <rect class="bx-r" x="230" y="134" width="210" height="56" rx="10"/>
+  <text class="ttl on-r" x="335" y="156" text-anchor="middle">有漏洞的旧镜像</text>
+  <text class="mono" x="335" y="178" text-anchor="middle">sha256:3f5b28…</text>
+  <rect class="bx-g" x="470" y="134" width="210" height="56" rx="10"/>
+  <text class="ttl on-g" x="575" y="156" text-anchor="middle">修复后的新镜像</text>
+  <text class="mono" x="575" y="178" text-anchor="middle">sha256:9a1c07…</text>
+  <text class="sm" x="690" y="120" text-anchor="end">摘要 = 内容的指纹，永远不变</text>
+</svg>
+<figcaption>图 6-8　标签会“漂移”，摘要不会</figcaption>
+</figure>
+
+<div class="code" data-lang="bash">
+<pre>
+# 查看本地镜像的摘要
+$ docker images --digests alpine
+REPOSITORY   TAG      DIGEST                    IMAGE ID       CREATED       SIZE
+alpine       latest   sha256:c5b1261d...8e1ad6b c5b1261d6d3e   2 weeks ago   11.8MB
+
+# 拉取之前，先查看仓库里某个镜像的摘要
+$ docker buildx imagetools inspect nigelpoulton/k8sbook:latest
+Name:      docker.io/nigelpoulton/k8sbook:latest
+MediaType: application/vnd.docker.distribution.manifest.list.v2+json
+Digest:    sha256:13dd59a0c74e9a147800039b1ff4d61201375c008b96a29c5bd17244bce2e14b
+
+# 用摘要拉取：保证拿到的永远是这一个镜像
+$ docker pull nigelpoulton/k8sbook@sha256:13dd59a0c74e9a147800039b1ff4d61201375c008b96a29c5bd17244bce2e14b
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 生产环境的最佳实践</div>
+  <p>
+    在生产环境的部署文件和 Dockerfile 的 <code>FROM</code> 里，可以同时写标签和摘要：<code>FROM node:22-alpine@sha256:…</code>。
+    标签给人看（一眼知道是什么版本），摘要给机器用（保证一字不差）。Dependabot、Renovate 等工具可以帮你自动更新摘要。
+  </p>
+</div>
+
+<h3>镜像哈希与层哈希</h3>
+
+<p>
+  你已经知道镜像只是一堆独立层的松散集合。实际上，<strong>镜像本身只是一个清单文件（manifest）</strong>，包含一些元数据和层的列表；
+  真正的应用和依赖都在层里，而层完全独立，根本不知道自己属于哪个镜像。所以：
+</p>
+<ul>
+  <li><strong>镜像摘要</strong>是镜像 manifest 文件的哈希；</li>
+  <li><strong>层摘要</strong>是层内容的哈希。</li>
+</ul>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="镜像 manifest 引用 config 和各个层">
+  <rect class="bx-a" x="30" y="50" width="220" height="120" rx="12"/>
+  <text class="ttl on-a" x="140" y="76" text-anchor="middle">镜像 manifest</text>
+  <text class="sm" x="140" y="98" text-anchor="middle">一个小小的 JSON 文件</text>
+  <text class="mono" x="140" y="124" text-anchor="middle">摘要 = sha256(manifest)</text>
+  <text class="sm" x="140" y="150" text-anchor="middle">改任何一层 → manifest 变</text>
+  <path class="ln" d="M252 80 L400 40"  marker-end="url(#ar)"/>
+  <path class="ln" d="M252 100 L400 90"  marker-end="url(#ar)"/>
+  <path class="ln" d="M252 120 L400 140" marker-end="url(#ar)"/>
+  <path class="ln" d="M252 140 L400 190" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="405" y="22" width="320" height="34" rx="6"/><text class="sm on-p" x="565" y="44" text-anchor="middle">config：环境变量、启动命令、层的 diff_id …</text>
+  <rect class="bx" x="405" y="72" width="320" height="34" rx="6"/><text class="sm" x="565" y="94" text-anchor="middle">层 1 · sha256:c8a751…</text>
+  <rect class="bx" x="405" y="122" width="320" height="34" rx="6"/><text class="sm" x="565" y="144" text-anchor="middle">层 2 · sha256:c6f2b3…</text>
+  <rect class="bx" x="405" y="172" width="320" height="34" rx="6"/><text class="sm" x="565" y="194" text-anchor="middle">层 3 · sha256:055757…</text>
+</svg>
+<figcaption>图 6-9　镜像 = manifest + config + 若干层</figcaption>
+</figure>
+
+<div class="box deep">
+  <div class="t">&#128300; 深入：为什么不同命令显示的哈希对不上？</div>
+  <p>
+    Docker 在每次推送和拉取前后都会比对哈希，以确保数据在网络传输中没被篡改。但推送和拉取时层会被<strong>压缩</strong>（节省带宽和仓库空间），
+    压缩后的哈希自然和压缩前不同。所以每个层实际上有两个哈希：<strong>内容哈希</strong>（未压缩，即 config 里的 <code>diff_id</code>）
+    和<strong>分发哈希</strong>（压缩后，即 manifest 里的 <code>digest</code>）。这就是为什么 CLI 和仓库网页上显示的哈希有时对不上 ——
+    你看到的可能一个是内容哈希，一个是分发哈希。
+  </p>
+</div>
+
+<h2 id="multiarch">多架构镜像</h2>
+
+<p>
+  Docker 最大的优点之一是简单。但随着它支持 Windows、Linux，以及 ARM、x64、PowerPC、s390x 等各种 CPU 架构，
+  同一个镜像突然有了多个版本，用户要费劲地挑出适合自己机器的那个。这破坏了 Docker 的流畅体验。
+</p>
+<p>
+  <strong>多架构镜像</strong>解决了这个问题：Docker 和仓库 API 把多个架构的镜像藏在<strong>同一个标签</strong>后面。
+  你在任何架构上执行 <code>docker pull alpine</code>，都会自动拿到正确的版本。背后靠的是两个结构：
+</p>
+
+<ul>
+  <li><strong>manifest list</strong>（OCI 里叫 <strong>image index</strong>）：一个标签支持哪些架构的列表；</li>
+  <li><strong>manifest</strong>：每个架构各自的清单，列出该架构版本的 config 和层。</li>
+</ul>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="manifest list 指向各个架构的 manifest">
+  <rect class="bx-a" x="20" y="60" width="220" height="180" rx="12"/>
+  <text class="ttl on-a" x="130" y="86" text-anchor="middle">manifest list</text>
+  <text class="mono" x="130" y="106" text-anchor="middle">alpine:latest</text>
+  <rect class="bx" x="40" y="120" width="180" height="24" rx="5"/><text class="sm" x="130" y="137" text-anchor="middle">linux/amd64</text>
+  <rect class="bx" x="40" y="150" width="180" height="24" rx="5"/><text class="sm" x="130" y="167" text-anchor="middle">linux/arm64/v8</text>
+  <rect class="bx" x="40" y="180" width="180" height="24" rx="5"/><text class="sm" x="130" y="197" text-anchor="middle">linux/arm/v7</text>
+  <rect class="bx" x="40" y="210" width="180" height="24" rx="5"/><text class="sm" x="130" y="227" text-anchor="middle">linux/ppc64le …</text>
+
+  <path class="ln-a" d="M222 132 L340 60"  marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M222 162 L340 150" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M222 192 L340 240" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-b" x="345" y="30"  width="200" height="60" rx="10"/><text class="ttl on-b" x="445" y="54" text-anchor="middle">amd64 manifest</text><text class="sm" x="445" y="74" text-anchor="middle">config + 层列表</text>
+  <rect class="bx-b" x="345" y="120" width="200" height="60" rx="10"/><text class="ttl on-b" x="445" y="144" text-anchor="middle">arm64 manifest</text><text class="sm" x="445" y="164" text-anchor="middle">config + 层列表</text>
+  <rect class="bx-b" x="345" y="210" width="200" height="60" rx="10"/><text class="ttl on-b" x="445" y="234" text-anchor="middle">arm/v7 manifest</text><text class="sm" x="445" y="254" text-anchor="middle">config + 层列表</text>
+
+  <path class="ln" d="M547 60 H585"  marker-end="url(#ar)"/>
+  <path class="ln" d="M547 150 H585" marker-end="url(#ar)"/>
+  <path class="ln" d="M547 240 H585" marker-end="url(#ar)"/>
+  <rect class="bx-d" x="590" y="40"  width="150" height="40" rx="6"/><text class="sm" x="665" y="65" text-anchor="middle">amd64 的层</text>
+  <rect class="bx-d" x="590" y="130" width="150" height="40" rx="6"/><text class="sm" x="665" y="155" text-anchor="middle">arm64 的层</text>
+  <rect class="bx-d" x="590" y="220" width="150" height="40" rx="6"/><text class="sm" x="665" y="245" text-anchor="middle">arm/v7 的层</text>
+  <text class="lbl" x="380" y="292" text-anchor="middle">M 系列 Mac 上 docker pull → 自动选 arm64；Intel 服务器上 → 自动选 amd64</text>
+</svg>
+<figcaption>图 6-10　manifest list 与 manifest</figcaption>
+</figure>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker buildx imagetools inspect alpine
+Name:      docker.io/library/alpine:latest
+MediaType: application/vnd.oci.image.index.v1+json         &lt;&lt;---- manifest list / image index
+Digest:    sha256:c5b1261d6d3e43071626931fc004f70149baeba2c8ec672bd4f27761f8e1ad6b
+Manifests:
+  Name:      docker.io/library/alpine:latest@sha256:6457d53f...628977d0
+  MediaType: application/vnd.oci.image.manifest.v1+json    &lt;&lt;---- 某个架构的 manifest
+  Platform:  linux/amd64
+  Name:      docker.io/library/alpine:latest@sha256:a0264d60...93467a46
+  MediaType: application/vnd.oci.image.manifest.v1+json
+  Platform:  linux/arm64/v8
+  &lt;Snip&gt;
+</pre>
+</div>
+
+<p>看看效果：在 ARM Mac 和 x86 Windows 上执行<strong>完全相同</strong>的命令，Docker 各自拉取了正确的镜像：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+# ARM 架构的 Mac
+$ docker run --rm golang go version
+go version go1.25.1 linux/arm64
+
+# x86 的 Windows（Windows 容器模式）
+> docker run --rm golang go version
+go version go1.25.1 windows/amd64
+</pre>
+</div>
+
+<p>
+  你也可以用 <code>--platform</code> 显式要求某个架构，比如在 ARM Mac 上拉取 x86 镜像：<code>docker pull --platform linux/amd64 alpine</code>
+  （运行时会通过 QEMU/Rosetta 模拟，速度较慢）。如何<strong>构建</strong>多架构镜像，第 8 章会讲。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 看看本地存了哪些架构</div>
+  <p>
+    在使用 containerd 镜像存储的 Docker 上，可以运行 <code>docker image ls --tree</code>，以树状结构列出每个多平台镜像下本地实际存在的各个架构版本。
+  </p>
+</div>
+
+<h2 id="scout">用 Docker Scout 扫描漏洞</h2>
+
+<p>
+  有很多工具可以扫描镜像中的已知漏洞。<strong>Docker Scout</strong> 内置于 Docker 的各个层面：CLI、Docker Desktop、Docker Hub 和
+  <a href="https://scout.docker.com">scout.docker.com</a> 门户。它会先为镜像生成一份<strong>软件物料清单（SBOM）</strong>，再拿它去比对已知漏洞数据库。
+</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker scout quickview nigelpoulton/tu-demo:latest
+    ✓ SBOM of image already cached, 66 packages indexed
+
+  Target             │  nigelpoulton/tu-demo:latest  │    0C     1H     1M     0L
+    digest           │  b4210d0aa52f                 │
+  Base image         │  python:3-alpine              │    0C     1H     1M     0L
+  Updated base image │  python:3.13-alpine           │    0C     0H     0M     0L
+</pre>
+</div>
+
+<p>输出表示：0 个严重（Critical）、1 个高危（High）、1 个中危（Medium）、0 个低危（Low）漏洞，并且建议你换一个更新的基础镜像。想看详情和修复建议，用 <code>docker scout cves</code>：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker scout cves nigelpoulton/tu-demo:latest
+    ✓ Detected 1 vulnerable package with 2 vulnerabilities
+## Packages and Vulnerabilities
+   0C     1H     1M     0L  expat 2.5.0-r2
+pkg:apk/alpine/expat@2.5.0-r2?os_name=alpine&amp;os_version=3.19
+    ✗ HIGH CVE-2023-52425
+      https://scout.docker.com/v/CVE-2023-52425
+      Affected range : &lt;2.6.0-r0
+      Fixed version  : 2.6.0-r0
+&lt;Snip&gt;
+</pre>
+</div>
+
+<p>从报告中可以读出：哪个软件包有漏洞（expat 2.5.0-r2）、漏洞编号（CVE-2023-52425）、详情链接，以及修复版本（2.6.0-r0）。</p>
+
+<div class="box new">
+  <div class="t">&#10024; 最新变化：Scout 的定位调整</div>
+  <p>
+    Docker Scout 仍在持续开发（例如新增了 JSON 输出格式），CLI 命令 <code>docker scout</code> 照常可用，个人账户有免费额度。
+    但在 2026 年 9 月的 Docker Desktop 4.92 中，Desktop 里独立的 Scout 视图以及 <code>docker pull</code>/<code>docker build</code> 后的 Scout 提示已被移除。
+    开源的替代工具还有 Trivy、Grype 等。第 16 章会再讨论漏洞扫描。
+  </p>
+</div>
+
+<h2 id="delete">删除镜像</h2>
+
+<p>
+  用 <code>docker rmi</code>（remove image）删除镜像。删除会从本地仓库移除镜像，并删除本地文件系统上对应的层数据。
+  但<strong>被多个镜像共享的层</strong>要等所有引用它的镜像都删掉后才会被删除。可以用名字、短 ID 或 SHA 删除，也可以一次删多个：
+</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker rmi redis:latest af111729d35a sha256:c5b1261d...f8e1ad6b
+Untagged: redis:latest
+Deleted: sha256:76d5908f5e19fcdd73daf956a38826f790336ee4707d9028f32b24ad9ac72c08
+Untagged: nigelpoulton/tu-demo:v2
+Deleted: sha256:af111729d35a09fd24c25607ec045184bb8d76e37714dfc2d9e55d13b3ebbc67
+&lt;Snip&gt;
+</pre>
+</div>
+
+<p>
+  如果镜像正被某个容器使用，或者被多个标签引用，Docker 会阻止删除。可以加 <code>-f</code> 强制删除，但要谨慎：
+  强制删除一个正在被容器使用的镜像，只会去掉它的标签，镜像本身会作为<strong>悬空镜像（dangling image）</strong>留在系统里（在列表中显示为 <code>&lt;none&gt;:&lt;none&gt;</code>）。
+</p>
+
+<p>批量清理的几个常用命令：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker images -q                 # 只输出所有镜像的 ID
+44dd6f223004
+3f5ef9003cef
+
+$ docker rmi $(docker images -q) -f   # 把 ID 列表交给 rmi：删除所有镜像（慎用！）
+
+$ docker image prune               # 删除所有悬空镜像
+$ docker image prune -a            # 删除所有没有被容器使用的镜像
+$ docker system df                 # 查看镜像、容器、卷、构建缓存各占多少磁盘
+</pre>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; Windows 用户</div>
+  <p><code>$(...)</code> 这种命令替换写法只能在 PowerShell 里用，老式的 cmd 不支持。</p>
+</div>
+
+<h2 id="commands">命令速查</h2>
+
+<div class="tw"><table class="cheat">
+  <tr><th>命令</th><th>作用</th></tr>
+  <tr><td><code>docker pull &lt;镜像&gt;</code></td><td>从仓库下载镜像，默认 Docker Hub、默认 latest 标签</td></tr>
+  <tr><td><code>docker images</code></td><td>列出本地镜像；<code>--digests</code> 显示摘要，<code>-q</code> 只显示 ID</td></tr>
+  <tr><td><code>docker inspect &lt;镜像&gt;</code></td><td>查看镜像的详细元数据（层、环境变量、启动命令……）</td></tr>
+  <tr><td><code>docker history &lt;镜像&gt;</code></td><td>查看镜像的构建历史</td></tr>
+  <tr><td><code>docker manifest inspect &lt;镜像&gt;</code></td><td>查看仓库里镜像的 manifest list</td></tr>
+  <tr><td><code>docker buildx imagetools inspect &lt;镜像&gt;</code></td><td>查看仓库里镜像的摘要和各架构 manifest</td></tr>
+  <tr><td><code>docker scout quickview / cves</code></td><td>漏洞概览 / 漏洞详情与修复建议</td></tr>
+  <tr><td><code>docker rmi &lt;镜像&gt;</code></td><td>删除镜像；正被容器使用的镜像不能删</td></tr>
+  <tr><td><code>docker image prune [-a]</code></td><td>清理悬空镜像 / 所有未使用的镜像</td></tr>
+</table></div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>镜像包含运行应用所需的一切：刚刚够用的 OS、代码、依赖和元数据。一个镜像可以启动多个容器。</li>
+  <li>镜像由多个只读层堆叠而成，每个镜像都有一个 manifest，列出组成它的层以及堆叠方式。层可以在镜像之间共享。</li>
+  <li>镜像名（标签）是可变的，<code>latest</code> 不一定最新；摘要是内容的哈希，不可变，可以保证你拉到的就是你想要的那个镜像。</li>
+  <li>Docker Hub 有经过审核的官方镜像，但任何来自互联网的软件都要保持警惕。</li>
+  <li>多架构镜像通过 manifest list 让同一个标签服务不同的 CPU 架构。</li>
+  <li>Docker Scout 等工具可以扫描镜像中的已知漏洞并给出修复建议。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>拉取 <code>python:3.13-slim</code> 和 <code>python:3.13-alpine</code>，比较它们的大小。再拉取 <code>python:3.13</code>，看看完整版有多大。</li>
+    <li>对 <code>nginx:latest</code> 运行 <code>docker history</code> 和 <code>docker inspect</code>，数一数它有几层，找出启动命令（<code>Cmd</code>）是什么。</li>
+    <li>运行 <code>docker buildx imagetools inspect nginx</code>，列出 nginx 支持的所有平台。</li>
+    <li>给 <code>alpine</code> 打一个新标签：<code>docker tag alpine my-alpine:v1</code>，然后用 <code>docker images</code> 验证两个标签的 IMAGE ID 相同。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

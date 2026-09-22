@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 15 章 · 卷与持久化数据 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="15">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 15 章</span>
+<h1>卷与持久化数据</h1>
+<p class="lede">
+  容器被设计成“随时可以丢弃”，可数据库里的订单、用户上传的图片，可不能跟着容器一起丢。
+  本章讲清楚容器里的数据到底存在哪、什么时候会丢，以及如何用<strong>卷（volume）</strong>让重要数据活得比容器更久。
+  最后补充原书没有展开的<strong>绑定挂载</strong>和 <strong>tmpfs</strong>，它们在日常开发中同样常用。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>区分持久化数据与非持久化数据、有状态应用与无状态应用</li>
+    <li>理解容器可写层的位置和生命周期</li>
+    <li>会用 <code>docker volume</code> 创建、查看、删除卷，并把卷挂进容器</li>
+    <li>理解跨节点共享存储时的数据损坏风险</li>
+    <li>分清卷、绑定挂载、tmpfs 三种挂载方式，以及 <code>-v</code> 与 <code>--mount</code> 的写法</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="tldr">一句话概括</h2>
+
+<p>数据分为两种：</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#128190;</span><h4>持久化数据</h4><p>你在乎、必须保留的数据：客户记录、财务数据、研究结果、审计数据、某些日志。管理这类数据的应用叫<strong>有状态应用</strong>。</p></div>
+  <div class="card"><span class="ic">&#128465;</span><h4>非持久化数据</h4><p>不在乎、不需要保留的数据：临时文件、缓存、草稿。不产生持久数据的应用叫<strong>无状态应用</strong>。</p></div>
+</div>
+
+<p>Docker 对两者都有方案：</p>
+<ul>
+  <li>对无状态应用，Docker 给每个容器一块<strong>跟随容器生命周期</strong>的本地存储（可写层），适合放临时数据，容器删除后就没了；</li>
+  <li>对有状态应用，Docker 提供<strong>卷</strong>。卷是独立的对象，有自己的生命周期，挂载到容器里使用。删除容器不会删除卷和里面的数据，卷还可以挂到别的容器里。</li>
+</ul>
+
+<h2 id="without">没有卷的容器</h2>
+
+<p>
+  Docker 早期，容器只适合不产生重要数据的无状态应用。但即便是无状态应用，很多也需要一个地方写临时数据。
+  所以 Docker 创建容器时，会把只读的镜像层堆叠起来，然后在最上面放一层薄薄的本地存储（第 7 章讲过的读写层）：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="容器的可写层随容器一起创建和删除">
+  <rect class="bx-g" x="200" y="30" width="360" height="44" rx="8"/>
+  <text class="ttl on-g" x="380" y="52" text-anchor="middle">容器的可写层（临时存储）</text>
+  <text class="sm" x="380" y="68" text-anchor="middle">随容器创建而创建，随容器删除而删除</text>
+  <rect class="bx-a" x="200" y="84" width="360" height="30" rx="6"/><text class="sm on-a" x="380" y="104" text-anchor="middle">镜像层 3（只读）</text>
+  <rect class="bx-a" x="200" y="118" width="360" height="30" rx="6"/><text class="sm on-a" x="380" y="138" text-anchor="middle">镜像层 2（只读）</text>
+  <rect class="bx-a" x="200" y="152" width="360" height="30" rx="6"/><text class="sm on-a" x="380" y="172" text-anchor="middle">镜像层 1（只读）</text>
+  <text class="sm" x="100" y="56" text-anchor="middle">docker rm 之后</text>
+  <text class="ttl on-r" x="100" y="78" text-anchor="middle">✗ 数据消失</text>
+  <path class="ln-r" d="M150 52 H196"/>
+  <text class="lbl" x="380" y="212" text-anchor="middle">位置：Linux 在 /var/lib/docker/… 下；Windows 在 C:\ProgramData\Docker\windowsfilter\… 下</text>
+  <text class="lbl" x="380" y="232" text-anchor="middle">别名：thin writable layer · ephemeral storage · read-write storage · graphdriver storage</text>
+</svg>
+<figcaption>图 15-1　容器的临时存储</figcaption>
+</figure>
+
+<p>
+  这一层是容器“可读写”的关键：应用要修改已有文件或添加新文件时，改动都写进这一层，Docker 再把它合并进容器看到的视图里。
+  但它和容器的生命周期绑定：容器创建时它被创建，容器删除时它被删除。所以它<strong>不适合存放需要保留的数据</strong>。
+</p>
+
+<div class="box key">
+  <div class="t">&#9733; 容器应该是不可变的</div>
+  <p>
+    虽然可写层让你能修改运行中的容器，但你<strong>永远不应该这样做</strong>。应该把容器当作<strong>不可变对象</strong>：部署后就不再修改。
+    需要修复或改配置时，创建并测试一个包含改动的新容器，然后用它替换旧容器。
+    要说明的是：数据库这类应用当然可以修改它管理的<strong>数据</strong>；但用户和配置工具不应修改容器本身的配置（网络、应用配置等）。
+  </p>
+</div>
+
+<h2 id="with">使用卷的容器</h2>
+
+<p>应该用卷来处理容器中的持久化数据，三个主要理由：</p>
+<ol>
+  <li>卷是<strong>独立对象</strong>，不和容器的生命周期绑定；</li>
+  <li>卷可以映射到<strong>专门的外部存储系统</strong>；</li>
+  <li>不同 Docker 主机上的多个容器可以通过卷<strong>访问和共享同一份数据</strong>。</li>
+</ol>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="卷作为独立对象挂载到容器的 /data 目录">
+  <rect class="bx-a" x="40" y="30" width="330" height="210" rx="14"/>
+  <text class="ttl on-a" x="205" y="56" text-anchor="middle">容器</text>
+  <rect class="bx" x="70" y="72" width="270" height="30" rx="6"/><text class="mono" x="205" y="92" text-anchor="middle">/etc  /app  /tmp …</text>
+  <text class="sm" x="205" y="120" text-anchor="middle">↑ 这些目录用的是可写层（临时）</text>
+  <rect class="bx-p" x="70" y="150" width="270" height="40" rx="8"/><text class="mono on-p" x="205" y="175" text-anchor="middle">/data  ← 卷的挂载点</text>
+  <text class="sm" x="205" y="218" text-anchor="middle">写入 /data 的文件实际存在卷里</text>
+
+  <path class="ln-p" d="M342 170 H440" marker-end="url(#ar-p)"/>
+  <text class="sm on-p" x="391" y="160" text-anchor="middle">挂载</text>
+
+  <rect class="bx-p" x="445" y="120" width="140" height="100" rx="50"/>
+  <text class="ttl on-p" x="515" y="164" text-anchor="middle">卷 myvol</text>
+  <text class="sm" x="515" y="184" text-anchor="middle">独立的生命周期</text>
+
+  <path class="ln" d="M587 150 L640 100" marker-end="url(#ar)"/>
+  <path class="ln" d="M587 190 L640 225" marker-end="url(#ar)"/>
+  <rect class="bx-d" x="630" y="60" width="115" height="50" rx="8"/><text class="sm" x="687" y="82" text-anchor="middle">主机目录</text><text class="sm" x="687" y="98" text-anchor="middle">（local 驱动）</text>
+  <rect class="bx-d" x="630" y="200" width="115" height="50" rx="8"/><text class="sm" x="687" y="222" text-anchor="middle">外部存储</text><text class="sm" x="687" y="238" text-anchor="middle">NFS / 云盘 / SAN</text>
+</svg>
+<figcaption>图 15-2　卷是容器之外的独立对象</figcaption>
+</figure>
+
+<p>
+  流程是：先创建卷，再创建容器，然后把卷挂载进容器的某个目录。写到这个目录的一切都存到卷里。
+  删掉容器，卷和数据都还在，你甚至可以把这个卷挂到另一个容器里。容器的其他目录仍然使用本地存储中的可写层。
+</p>
+
+<h3>创建和管理卷</h3>
+
+<p>卷是 Docker 的一等公民：有专门的 <code>docker volume</code> 子命令，API 里也有卷资源。</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker volume create myvol
+myvol
+
+$ docker volume ls
+DRIVER    VOLUME NAME
+local     myvol
+
+$ docker volume inspect myvol
+[
+    {
+        "CreatedAt": "2026-09-22T12:23:14Z",
+        "Driver": "local",
+        "Labels": null,
+        "Mountpoint": "/var/lib/docker/volumes/myvol/_data",
+        "Name": "myvol",
+        "Options": null,
+        "Scope": "local"
+    }
+]
+</pre>
+</div>
+
+<ul>
+  <li>默认使用内置的 <strong><code>local</code> 驱动</strong>创建卷，顾名思义，这种卷只能被同一节点上的容器使用。可以用 <code>-d</code> 指定其他驱动（需要先安装）。</li>
+  <li><code>Driver</code> 和 <code>Scope</code> 都是 <code>local</code>，说明卷只在这台主机上可用；<code>Mountpoint</code> 显示卷在主机文件系统中的位置。</li>
+  <li>local 驱动会给每个卷在主机的 <code>/var/lib/docker/volumes</code> 下建一个目录。这意味着任何能访问主机的人都能绕过容器直接访问卷的内容 —— 能做到，但不推荐这么做。</li>
+</ul>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="通过卷插件接入外部存储">
+  <rect class="bx" x="20" y="30" width="400" height="140" rx="14"/>
+  <text class="ttl" x="40" y="54">Docker 主机</text>
+  <rect class="bx-a" x="40" y="70" width="130" height="80" rx="10"/><text class="ttl on-a" x="105" y="108" text-anchor="middle">容器</text><text class="sm" x="105" y="128" text-anchor="middle">挂载卷</text>
+  <rect class="bx-p" x="200" y="70" width="200" height="80" rx="10"/><text class="ttl on-p" x="300" y="100" text-anchor="middle">卷插件（驱动）</text><text class="sm" x="300" y="122" text-anchor="middle">-d &lt;driver&gt;</text><text class="sm" x="300" y="138" text-anchor="middle">第三方提供</text>
+  <path class="ln" d="M172 110 H196"/>
+  <path class="ln-a" d="M402 110 H496" marker-end="url(#ar-a)"/>
+  <rect class="bx-b" x="500" y="50" width="240" height="120" rx="14"/>
+  <text class="ttl on-b" x="620" y="80" text-anchor="middle">外部存储系统</text>
+  <text class="sm" x="620" y="106" text-anchor="middle">云存储：AWS EBS / EFS、Azure Disk…</text>
+  <text class="sm" x="620" y="126" text-anchor="middle">本地数据中心：SAN、NAS、NFS</text>
+  <text class="sm" x="620" y="146" text-anchor="middle">分布式存储：Ceph、Portworx…</text>
+</svg>
+<figcaption>图 15-3　通过插件把外部存储接入 Docker</figcaption>
+</figure>
+
+<p>删除卷有两种方式：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker volume rm myvol                # 精确删除指定的卷
+
+$ docker volume prune --all             # 删除所有没被容器或服务副本使用的卷，慎用！
+WARNING! This will remove all local volumes not used by at least one container.
+Are you sure you want to continue? [y/N] y
+Deleted Volumes:
+myvol
+</pre>
+</div>
+
+<p>两个命令都<strong>不会删除正在被使用的卷</strong>。你刚刚创建、查看、删除了一个卷，全程没有涉及任何容器 —— 这证明了卷与容器是解耦的。</p>
+
+<div class="box note">
+  <div class="t">&#9432; prune 的 --all</div>
+  <p>自 Docker Engine 23 起，不加参数的 <code>docker volume prune</code> 只删除<strong>匿名卷</strong>（没有名字、由 Docker 随机命名的卷），加上 <code>--all</code> 才会连有名字的卷一起删除。</p>
+</div>
+
+<h3>Dockerfile 中的 VOLUME 指令</h3>
+
+<p>
+  除了命令行和 Compose 文件，还可以在 Dockerfile 里用 <code>VOLUME &lt;容器内挂载点&gt;</code> 声明卷。有意思的是，Dockerfile 里<strong>不能指定主机目录</strong> ——
+  因为不同主机的目录结构可能不同，写死一个主机上不存在的目录会让构建出问题。所以主机端的位置要在部署时指定；如果部署时什么都不指定，Docker 会自动创建一个匿名卷。
+</p>
+
+<h3>在容器中使用卷</h3>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker run -it --name voltainer \
+    --mount source=bizvol,target=/vol \
+    alpine
+</pre>
+</div>
+
+<p><code>--mount</code> 让 Docker 把一个叫 bizvol 的卷挂到容器的 <code>/vol</code>。虽然你并没有叫 bizvol 的卷，命令也成功了，这说明：</p>
+<ul>
+  <li>指定的卷<strong>已存在</strong>，Docker 就使用它；</li>
+  <li>指定的卷<strong>不存在</strong>，Docker 就创建它。</li>
+</ul>
+
+<p>按 <kbd>Ctrl</kbd>+<kbd>P</kbd> <kbd>Ctrl</kbd>+<kbd>Q</kbd> 回到本地 shell，验证卷已被创建、并且在使用中无法删除：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker volume ls
+DRIVER    VOLUME NAME
+local     bizvol
+
+$ docker volume rm bizvol
+Error response from daemon: remove bizvol: volume is in use - [b44d3f82...dd2029ca]
+</pre>
+</div>
+
+<p>往卷里写点数据：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker exec -it voltainer sh
+/ # echo "I promise to write a book review on Amazon" &gt; /vol/file1
+/ # cat /vol/file1
+I promise to write a book review on Amazon
+/ # exit
+
+$ docker rm voltainer -f          # 删除容器
+$ docker volume ls                # 卷还在！
+DRIVER    VOLUME NAME
+local     bizvol
+</pre>
+</div>
+
+<p>卷还在，所以可以直接在主机上看到它的内容（Docker Desktop 上看不到，因为它在虚拟机里；可能需要 <code>sudo</code>。再次提醒：不推荐直接访问主机上的卷目录，这里只是演示）：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ sudo cat /var/lib/docker/volumes/bizvol/_data/file1
+I promise to write a book review on Amazon
+</pre>
+</div>
+
+<p>最后，把这个卷挂到一个全新的容器里：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker run -it --name newctr --mount source=bizvol,target=/vol alpine sh
+/ # cat /vol/file1
+I promise to write a book review on Amazon
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="卷在容器被删除后继续存在，并挂载到新容器">
+  <rect class="bx-a" x="20" y="30" width="170" height="70" rx="10"/><text class="ttl on-a" x="105" y="58" text-anchor="middle">voltainer</text><text class="sm" x="105" y="80" text-anchor="middle">写入 /vol/file1</text>
+  <path class="ln-r" d="M192 65 H260" marker-end="url(#ar-r)"/><text class="sm on-r" x="226" y="56" text-anchor="middle">docker rm</text>
+  <rect class="bx-d" x="265" y="30" width="170" height="70" rx="10"/><text class="ttl" x="350" y="70" text-anchor="middle">容器没了</text>
+  <path class="ln-g" d="M437 65 H505" marker-end="url(#ar-g)"/><text class="sm on-g" x="471" y="56" text-anchor="middle">docker run</text>
+  <rect class="bx-g" x="510" y="30" width="230" height="70" rx="10"/><text class="ttl on-g" x="625" y="58" text-anchor="middle">newctr</text><text class="sm" x="625" y="80" text-anchor="middle">读到了 file1 ✓</text>
+  <rect class="bx-p" x="20" y="124" width="720" height="34" rx="17"/>
+  <text class="ttl on-p" x="380" y="146" text-anchor="middle">卷 bizvol：从头到尾一直都在</text>
+  <path class="ln-p" d="M105 102 V122"/><path class="ln-p" d="M625 102 V122"/>
+</svg>
+<figcaption>图 15-4　卷的生命周期独立于容器</figcaption>
+</figure>
+
+<p>恭喜！你创建了卷、写入数据、删除了原来的容器、把卷挂到第二个容器，并验证了数据依然存在。（作者说：如果你真去写了书评，谢谢！没写的话他会哭，但能挺过去 ;-)）</p>
+
+<h2 id="shared">跨节点共享存储</h2>
+
+<p>
+  把 Docker 接入外部存储系统，就能把共享存储提供给多个节点，让不同节点上的容器共享同一个卷。
+  外部系统可以是云存储服务，也可以是本地数据中心的企业存储。比如把一个存储 LUN 或 NFS 共享提供给多台 Docker 主机：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="外部存储把同一个共享卷提供给两个节点上的容器">
+  <rect class="bx" x="20" y="20" width="300" height="120" rx="12"/>
+  <text class="ttl" x="40" y="44">节点 1</text>
+  <rect class="bx-a" x="100" y="60" width="140" height="60" rx="8"/><text class="ttl on-a" x="170" y="86" text-anchor="middle">ctr1</text><text class="sm" x="170" y="106" text-anchor="middle">挂载 shared-vol</text>
+  <rect class="bx" x="440" y="20" width="300" height="120" rx="12"/>
+  <text class="ttl" x="460" y="44">节点 2</text>
+  <rect class="bx-a" x="520" y="60" width="140" height="60" rx="8"/><text class="ttl on-a" x="590" y="86" text-anchor="middle">ctr2</text><text class="sm" x="590" y="106" text-anchor="middle">挂载 shared-vol</text>
+  <rect class="bx-b" x="230" y="180" width="300" height="56" rx="12"/>
+  <text class="ttl on-b" x="380" y="204" text-anchor="middle">外部存储系统</text>
+  <text class="sm" x="380" y="224" text-anchor="middle">共享卷 shared-vol（NFS / LUN / 云存储）</text>
+  <path class="ln-b" d="M170 142 L300 178"/><path class="ln-b" d="M590 142 L460 178"/>
+  <text class="sm" x="220" y="168" text-anchor="middle">卷驱动</text><text class="sm" x="540" y="168" text-anchor="middle">卷驱动</text>
+</svg>
+<figcaption>图 15-5　两个节点共享同一个卷</figcaption>
+</figure>
+
+<p>搭建这样的环境需要不少东西：能用的专门存储系统及其相关知识、适配该存储系统的卷驱动/插件，还要了解应用如何读写共享存储，以避免数据损坏。</p>
+
+<h3>潜在的数据损坏</h3>
+
+<p>任何共享存储配置都要担心数据损坏。基于上图设想这样一个场景：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="两个容器写同一份共享数据导致覆盖的时序图">
+  <text class="ttl on-a" x="120" y="24" text-anchor="middle">ctr1 的应用</text>
+  <text class="ttl on-b" x="380" y="24" text-anchor="middle">共享卷里的数据</text>
+  <text class="ttl on-a" x="640" y="24" text-anchor="middle">ctr2 的应用</text>
+  <line class="ln-d" x1="120" y1="34" x2="120" y2="270"/>
+  <line class="ln-d" x1="380" y1="34" x2="380" y2="270"/>
+  <line class="ln-d" x1="640" y1="34" x2="640" y2="270"/>
+  <rect class="bx" x="330" y="44" width="100" height="26" rx="6"/><text class="mono" x="380" y="62" text-anchor="middle">x = 1</text>
+
+  <rect class="bx-a" x="40" y="84" width="160" height="40" rx="8"/><text class="sm on-a" x="120" y="100" text-anchor="middle">① 把 x=2 写进本地缓存</text><text class="sm" x="120" y="116" text-anchor="middle">以为已经写好了</text>
+
+  <rect class="bx-a" x="560" y="134" width="160" height="40" rx="8"/><text class="sm on-a" x="640" y="150" text-anchor="middle">② 直接写入 x=3</text><text class="sm" x="640" y="166" text-anchor="middle">提交到卷</text>
+  <path class="ln-a" d="M558 154 H434" marker-end="url(#ar-a)"/>
+  <rect class="bx" x="330" y="140" width="100" height="26" rx="6"/><text class="mono" x="380" y="158" text-anchor="middle">x = 3</text>
+
+  <rect class="bx-a" x="40" y="184" width="160" height="40" rx="8"/><text class="sm on-a" x="120" y="200" text-anchor="middle">③ 几秒后刷新缓存</text><text class="sm" x="120" y="216" text-anchor="middle">写入 x=2</text>
+  <path class="ln-r" d="M202 204 H326" marker-end="url(#ar-r)"/>
+  <rect class="bx-r" x="330" y="190" width="100" height="26" rx="6"/><text class="mono on-r" x="380" y="208" text-anchor="middle">x = 2 ✗</text>
+  <text class="lbl" x="380" y="250" text-anchor="middle">ctr2 的修改被悄悄覆盖了，而两个应用都以为自己写成功了</text>
+</svg>
+<figcaption>图 15-6　共享存储上的“最后写入者获胜”</figcaption>
+</figure>
+
+<p>这就是为什么：<strong>共享数据的应用必须自己设计协调更新的机制</strong>（比如文件锁、数据库事务、只让一个写入者写），存储系统替你做不了这件事。</p>
+
+<h2 id="mount-types">三种挂载方式：卷、绑定挂载、tmpfs</h2>
+
+<p>原书只讲了卷，但日常开发中你一定会遇到另外两种挂载方式，这里补上：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="卷、绑定挂载、tmpfs 三种挂载方式的对比">
+  <rect class="bx" x="20" y="20" width="720" height="250" rx="14"/>
+  <text class="ttl" x="40" y="44">Docker 主机</text>
+  <rect class="bx-a" x="60" y="60" width="640" height="70" rx="12"/>
+  <text class="ttl on-a" x="80" y="84">容器</text>
+  <rect class="bx" x="140" y="92" width="130" height="28" rx="6"/><text class="mono" x="205" y="111" text-anchor="middle">/data</text>
+  <rect class="bx" x="315" y="92" width="130" height="28" rx="6"/><text class="mono" x="380" y="111" text-anchor="middle">/app/src</text>
+  <rect class="bx" x="490" y="92" width="130" height="28" rx="6"/><text class="mono" x="555" y="111" text-anchor="middle">/run/cache</text>
+  <path class="ln-p" d="M205 122 V170"/><path class="ln-g" d="M380 122 V170"/><path class="ln-b" d="M555 122 V170"/>
+
+  <rect class="bx-p" x="100" y="174" width="210" height="80" rx="10"/>
+  <text class="ttl on-p" x="205" y="198" text-anchor="middle">卷 volume</text>
+  <text class="sm" x="205" y="218" text-anchor="middle">Docker 管理的存储区域</text>
+  <text class="mono" x="205" y="238" text-anchor="middle" style="font-size:10px">/var/lib/docker/volumes/</text>
+  <rect class="bx-g" x="325" y="174" width="110" height="80" rx="10"/>
+  <text class="ttl on-g" x="380" y="198" text-anchor="middle">绑定挂载</text>
+  <text class="sm" x="380" y="218" text-anchor="middle">主机任意目录</text>
+  <text class="mono" x="380" y="238" text-anchor="middle" style="font-size:10px">~/project/src</text>
+  <rect class="bx-b" x="450" y="174" width="210" height="80" rx="10"/>
+  <text class="ttl on-b" x="555" y="198" text-anchor="middle">tmpfs</text>
+  <text class="sm" x="555" y="218" text-anchor="middle">只在内存里，不落盘</text>
+  <text class="sm" x="555" y="238" text-anchor="middle">容器停止即消失</text>
+</svg>
+<figcaption>图 15-7　三种挂载方式</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th></th><th>卷 volume</th><th>绑定挂载 bind mount</th><th>tmpfs</th></tr>
+  <tr><td>数据在哪</td><td>Docker 管理的目录</td><td>主机上你指定的任意路径</td><td>主机内存</td></tr>
+  <tr><td>谁管理</td><td>Docker（<code>docker volume</code>）</td><td>你自己</td><td>Docker</td></tr>
+  <tr><td>容器删除后</td><td>保留</td><td>保留（本来就是主机文件）</td><td>消失</td></tr>
+  <tr><td>跨平台</td><td>好（Mac/Windows 上性能也好）</td><td>依赖主机目录结构</td><td>仅 Linux</td></tr>
+  <tr><td>典型用途</td><td><strong>生产数据</strong>：数据库、上传文件</td><td><strong>开发</strong>：把源码挂进容器实时生效；挂配置文件</td><td>敏感的临时数据、高速缓存</td></tr>
+</table></div>
+
+<h3>-v 与 --mount 两种写法</h3>
+
+<div class="vs">
+  <div class="old"><div class="h">-v / --volume：简洁，冒号分隔</div>
+  <div class="code" data-lang="bash"><pre>
+# 卷（名字不以 / 或 . 开头）
+docker run -v bizvol:/vol alpine
+# 绑定挂载（路径）
+docker run -v "$(pwd)"/src:/app/src node
+# 只读
+docker run -v "$(pwd)"/nginx.conf:/etc/nginx/nginx.conf:ro nginx
+</pre></div></div>
+  <div class="new"><div class="h">--mount：啰嗦但清晰（推荐）</div>
+  <div class="code" data-lang="bash"><pre>
+docker run --mount type=volume,src=bizvol,dst=/vol alpine
+docker run --mount type=bind,src="$(pwd)"/src,dst=/app/src node
+docker run --mount type=bind,src="$(pwd)"/nginx.conf,dst=/etc/nginx/nginx.conf,readonly nginx
+docker run --mount type=tmpfs,dst=/run/cache alpine
+</pre></div></div>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 两种写法的一个关键差异</div>
+  <p>
+    用 <code>-v</code> 绑定挂载一个<strong>主机上不存在的路径</strong>时，Docker 会悄悄帮你创建一个空目录（常常导致“我的配置文件怎么变成了目录”的困惑）；
+    用 <code>--mount type=bind</code> 则会直接报错。这也是推荐 <code>--mount</code> 的原因之一。
+  </p>
+</div>
+
+<p>在 Compose 里，两种写法都支持：</p>
+
+<div class="code" data-lang="yaml" data-file="compose.yaml">
+<pre>
+services:
+  db:
+    image: postgres:17
+    volumes:
+      - pgdata:/var/lib/postgresql/data     # 卷：生产数据
+  web:
+    build: .
+    volumes:
+      - ./src:/app/src                      # 绑定挂载：开发时热更新
+      - type: tmpfs                         # tmpfs：临时文件
+        target: /tmp
+volumes:
+  pgdata:
+</pre>
+</div>
+
+<h3>备份与恢复卷</h3>
+
+<p>卷不能直接“复制”，但可以借助一个临时容器，把卷打包成 tar 文件放到当前目录：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+# 备份：挂载卷 + 挂载当前目录，把卷内容打包
+$ docker run --rm -v bizvol:/source:ro -v "$(pwd)":/backup alpine \
+    tar czf /backup/bizvol.tgz -C /source .
+
+# 恢复到一个新卷
+$ docker run --rm -v bizvol-restored:/target -v "$(pwd)":/backup alpine \
+    tar xzf /backup/bizvol.tgz -C /target
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; Docker Desktop 用户</div>
+  <p>Docker Desktop 的 <strong>Volumes</strong> 页面可以图形化地浏览卷里的文件、导出和导入卷，更加方便。</p>
+</div>
+
+<h2 id="cleanup">清理</h2>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker rm newctr -f
+$ docker volume rm bizvol bizvol-restored
+</pre>
+</div>
+
+<h2 id="commands">命令速查</h2>
+
+<div class="tw"><table class="cheat">
+  <tr><th>命令</th><th>作用</th></tr>
+  <tr><td><code>docker volume create 名称</code></td><td>创建卷，默认 local 驱动；<code>-d</code> 指定其他驱动</td></tr>
+  <tr><td><code>docker volume ls</code></td><td>列出主机上所有卷</td></tr>
+  <tr><td><code>docker volume inspect 名称</code></td><td>查看卷的详细信息，包括在主机上的位置</td></tr>
+  <tr><td><code>docker volume prune [--all]</code></td><td>删除未被使用的（匿名 / 全部）卷，慎用！</td></tr>
+  <tr><td><code>docker volume rm 名称</code></td><td>删除指定的未使用卷</td></tr>
+  <tr><td><code>--mount type=volume|bind|tmpfs,…</code></td><td>启动容器时挂载卷 / 主机目录 / 内存文件系统</td></tr>
+  <tr><td><code>-v 源:目标[:ro]</code></td><td><code>--mount</code> 的简写形式</td></tr>
+</table></div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>数据分持久化和非持久化两种。每个容器默认都有一块随容器生灭的可写层，适合非持久化数据。</li>
+  <li>需要保留的数据应该存到卷里。卷是 Docker API 中的一等对象，用 <code>docker volume</code> 独立管理，删除容器不会删除卷里的数据。</li>
+  <li>第三方卷插件可以把 Docker 接入专门的外部存储系统，实现跨节点共享 —— 但应用必须自己协调并发写入，否则可能损坏数据。</li>
+  <li>除了卷，还有绑定挂载（适合开发时挂源码和配置）和 tmpfs（内存中的临时数据）。推荐使用含义更明确的 <code>--mount</code> 写法。</li>
+  <li>卷是 Docker 环境中处理持久化数据的推荐方式。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>启动一个 <code>postgres:17</code> 容器，用卷挂载 <code>/var/lib/postgresql/data</code>，建一张表插入数据；删掉容器后用同一个卷重新启动，确认数据还在。</li>
+    <li>用绑定挂载把本地的 <code>index.html</code> 挂到 <code>nginx</code> 的 <code>/usr/share/nginx/html</code>，修改本地文件后刷新浏览器，体会开发时的热更新。</li>
+    <li>分别用 <code>-v ./not-exist:/x</code> 和 <code>--mount type=bind,src=./not-exist,dst=/x</code> 启动容器，观察两者的不同行为。</li>
+    <li>用本章的 tar 方法备份一个卷，删除卷后再恢复它。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

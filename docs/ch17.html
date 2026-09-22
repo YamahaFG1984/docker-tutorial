@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 17 章 · 排错实战 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="17">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 17 章</span>
+<h1>排错实战</h1>
+<p class="lede">
+  学 Docker 最让人沮丧的时刻，不是概念听不懂，而是“命令敲了，就是不工作”。
+  本章把初学者最常遇到的八类问题整理成<strong>症状 → 排查命令 → 常见原因 → 解决办法</strong>的格式，并教你一套通用的排错思路。
+  遇到问题时，把这一章当成手册来查。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>掌握一套通用的排错五步法，以及每一步用什么命令</li>
+    <li>看懂容器退出码，快速判断“为什么一启动就退出”</li>
+    <li>解决“容器在跑但访问不到”“容器之间连不上”这两类网络问题</li>
+    <li>解决构建失败、拉取失败、磁盘占满、权限不足等常见问题</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="method">排错五步法</h2>
+
+<p>不管遇到什么问题，都可以按同一个顺序排查：<strong>从外到内、从简单到复杂</strong>。大多数问题在前三步就能找到原因。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="排错五步法：看状态、看日志、看配置、进去看、缩小范围">
+  <rect class="bx-b" x="10"  y="40" width="138" height="120" rx="12"/>
+  <text class="ttl on-b" x="79" y="66" text-anchor="middle">① 看状态</text>
+  <text class="mono" x="79" y="92" text-anchor="middle">docker ps -a</text>
+  <text class="sm" x="79" y="116" text-anchor="middle">在跑吗？</text>
+  <text class="sm" x="79" y="134" text-anchor="middle">退出码是多少？</text>
+  <rect class="bx-a" x="162" y="40" width="138" height="120" rx="12"/>
+  <text class="ttl on-a" x="231" y="66" text-anchor="middle">② 看日志</text>
+  <text class="mono" x="231" y="92" text-anchor="middle">docker logs</text>
+  <text class="sm" x="231" y="116" text-anchor="middle">应用自己</text>
+  <text class="sm" x="231" y="134" text-anchor="middle">说了什么？</text>
+  <rect class="bx-g" x="314" y="40" width="138" height="120" rx="12"/>
+  <text class="ttl on-g" x="383" y="66" text-anchor="middle">③ 看配置</text>
+  <text class="mono" x="383" y="92" text-anchor="middle">docker inspect</text>
+  <text class="sm" x="383" y="116" text-anchor="middle">端口、网络、挂载、</text>
+  <text class="sm" x="383" y="134" text-anchor="middle">环境变量对不对？</text>
+  <rect class="bx-p" x="466" y="40" width="138" height="120" rx="12"/>
+  <text class="ttl on-p" x="535" y="66" text-anchor="middle">④ 进去看</text>
+  <text class="mono" x="535" y="92" text-anchor="middle">exec / debug</text>
+  <text class="sm" x="535" y="116" text-anchor="middle">文件在吗？</text>
+  <text class="sm" x="535" y="134" text-anchor="middle">端口在听吗？</text>
+  <rect class="bx-r" x="618" y="40" width="132" height="120" rx="12"/>
+  <text class="ttl on-r" x="684" y="66" text-anchor="middle">⑤ 缩小范围</text>
+  <text class="sm" x="684" y="94" text-anchor="middle">换最小配置</text>
+  <text class="sm" x="684" y="112" text-anchor="middle">一次只改一处</text>
+  <text class="sm" x="684" y="130" text-anchor="middle">对照能用的</text>
+  <path class="ln" d="M150 100 H158" marker-end="url(#ar)"/>
+  <path class="ln" d="M302 100 H310" marker-end="url(#ar)"/>
+  <path class="ln" d="M454 100 H462" marker-end="url(#ar)"/>
+  <path class="ln" d="M606 100 H614" marker-end="url(#ar)"/>
+  <rect class="bx-d" x="10" y="186" width="740" height="44" rx="10"/>
+  <text class="lbl" x="380" y="213" text-anchor="middle">80% 的问题，在第 ② 步 docker logs 里就有答案 —— 可惜很多人跳过了它</text>
+</svg>
+<figcaption>图 17-1　排错五步法</figcaption>
+</figure>
+
+<h3>排错工具箱</h3>
+
+<div class="tw"><table class="cheat">
+  <tr><th>命令</th><th>什么时候用</th></tr>
+  <tr><td><code>docker ps -a</code></td><td>第一步永远是它：容器在不在、状态、退出码、端口映射</td></tr>
+  <tr><td><code>docker logs --tail 50 -t 容器</code></td><td>看应用最后输出了什么；<code>-f</code> 持续跟踪</td></tr>
+  <tr><td><code>docker inspect 容器</code></td><td>完整配置：<code>State</code>（含 <code>ExitCode</code>、<code>OOMKilled</code>、<code>Error</code>）、<code>Mounts</code>、<code>NetworkSettings</code>、<code>Config.Env</code></td></tr>
+  <tr><td><code>docker events</code></td><td>实时查看引擎事件：容器反复重启、被 OOM 杀掉，一眼可见</td></tr>
+  <tr><td><code>docker exec -it 容器 sh</code></td><td>进入运行中的容器检查文件、进程、网络</td></tr>
+  <tr><td><code>docker debug 容器</code></td><td>容器里没有 shell 或工具时使用（第 7 章）</td></tr>
+  <tr><td><code>docker run --rm -it --network container:目标 nicolaka/netshoot</code></td><td>共享目标容器的网络命名空间，用满满一箱网络工具排查</td></tr>
+  <tr><td><code>docker stats</code> / <code>docker system df</code></td><td>资源占用 / 磁盘占用</td></tr>
+  <tr><td><code>docker compose config</code> / <code>logs</code> / <code>ps</code></td><td>Compose 应用：看最终配置、看所有服务日志、看状态</td></tr>
+  <tr><td><code>docker build --progress=plain</code></td><td>构建失败时看完整输出</td></tr>
+</table></div>
+
+<div class="box tip">
+  <div class="t">&#128161; 用 --format 只看关键字段</div>
+  <p><code>docker inspect -f '{{.State.ExitCode}} {{.State.OOMKilled}} {{.State.Error}}' 容器</code> 能一行看完“怎么死的”。
+    <code>docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'</code> 能让列表清爽很多。</p>
+</div>
+
+<h2 id="exits">问题一：容器一启动就退出</h2>
+
+<p><strong>症状：</strong><code>docker run -d</code> 返回了容器 ID，但 <code>docker ps</code> 里没有它；<code>docker ps -a</code> 显示 <code>Exited (x) 2 seconds ago</code>，或者 <code>Restarting</code> 反复出现。</p>
+
+<p>先记住第 7 章的核心规则：<strong>容器只在 PID 1 运行时才运行</strong>。容器退出了，说明主进程结束了，要找的就是“它为什么结束”。而<strong>退出码</strong>是最重要的线索：</p>
+
+<div class="tw"><table>
+  <tr><th>退出码</th><th>含义</th><th>典型原因</th></tr>
+  <tr><td><code>0</code></td><td>正常结束</td><td>主进程本来就是一次性任务（如 <code>echo</code>），或者是 shell 却没有 <code>-it</code>，读到 EOF 就退出了</td></tr>
+  <tr><td><code>1</code> 等</td><td>应用自己报错退出</td><td>配置错误、缺少环境变量、连不上数据库 —— <strong>看 <code>docker logs</code></strong></td></tr>
+  <tr><td><code>125</code></td><td>docker run 本身失败</td><td>参数写错、端口已被占用、名字冲突，容器根本没启动</td></tr>
+  <tr><td><code>126</code></td><td>命令无法执行</td><td>文件没有执行权限、是目录而不是程序</td></tr>
+  <tr><td><code>127</code></td><td>命令找不到</td><td>CMD/ENTRYPOINT 拼错、镜像里没有这个程序、脚本的 <code>#!/bin/bash</code> 在 alpine 里不存在</td></tr>
+  <tr><td><code>137</code></td><td>被 SIGKILL（128+9）</td><td>内存超限被 OOM 杀掉，或 <code>docker stop</code> 超时后被强杀</td></tr>
+  <tr><td><code>139</code></td><td>段错误（128+11）</td><td>程序崩溃，常见于架构或 C 库不匹配（glibc 程序跑在 musl/alpine 上）</td></tr>
+  <tr><td><code>143</code></td><td>被 SIGTERM（128+15）</td><td>被正常停止，通常不是问题</td></tr>
+</table></div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="容器立即退出的排查决策树">
+  <rect class="bx-a" x="270" y="14" width="220" height="40" rx="10"/>
+  <text class="ttl on-a" x="380" y="39" text-anchor="middle">docker ps -a 看退出码</text>
+  <path class="ln" d="M320 56 L110 96" marker-end="url(#ar)"/>
+  <path class="ln" d="M360 56 L300 96" marker-end="url(#ar)"/>
+  <path class="ln" d="M400 56 L480 96" marker-end="url(#ar)"/>
+  <path class="ln" d="M440 56 L660 96" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="20"  y="100" width="170" height="44" rx="8"/><text class="ttl on-b" x="105" y="127" text-anchor="middle">0</text>
+  <rect class="bx-r" x="215" y="100" width="170" height="44" rx="8"/><text class="ttl on-r" x="300" y="127" text-anchor="middle">1 或其他</text>
+  <rect class="bx-p" x="400" y="100" width="170" height="44" rx="8"/><text class="ttl on-p" x="485" y="127" text-anchor="middle">126 / 127</text>
+  <rect class="bx-g" x="590" y="100" width="150" height="44" rx="8"/><text class="ttl on-g" x="665" y="127" text-anchor="middle">137</text>
+  <path class="ln" d="M105 146 V170" marker-end="url(#ar)"/><path class="ln" d="M300 146 V170" marker-end="url(#ar)"/><path class="ln" d="M485 146 V170" marker-end="url(#ar)"/><path class="ln" d="M665 146 V170" marker-end="url(#ar)"/>
+  <rect class="bx" x="20"  y="174" width="170" height="140" rx="10"/>
+  <text class="sm" x="105" y="198" text-anchor="middle">主进程“做完了”</text>
+  <text class="sm" x="105" y="222" text-anchor="middle">· 是 shell 吗？加 -it</text>
+  <text class="sm" x="105" y="242" text-anchor="middle">· 服务跑到后台了？</text>
+  <text class="sm" x="105" y="260" text-anchor="middle">（改成前台运行，</text>
+  <text class="sm" x="105" y="278" text-anchor="middle">如 nginx -g 'daemon off;'）</text>
+  <rect class="bx" x="215" y="174" width="170" height="140" rx="10"/>
+  <text class="sm" x="300" y="198" text-anchor="middle">应用报错了</text>
+  <text class="mono" x="300" y="222" text-anchor="middle">docker logs 容器</text>
+  <text class="sm" x="300" y="246" text-anchor="middle">· 缺环境变量？</text>
+  <text class="sm" x="300" y="264" text-anchor="middle">· 配置文件没挂进来？</text>
+  <text class="sm" x="300" y="282" text-anchor="middle">· 依赖服务还没就绪？</text>
+  <rect class="bx" x="400" y="174" width="170" height="140" rx="10"/>
+  <text class="sm" x="485" y="198" text-anchor="middle">启动命令有问题</text>
+  <text class="mono" x="485" y="222" text-anchor="middle" style="font-size:10.5px">inspect .Config.Cmd</text>
+  <text class="sm" x="485" y="246" text-anchor="middle">· 程序名拼错？</text>
+  <text class="sm" x="485" y="264" text-anchor="middle">· 没有执行权限？</text>
+  <text class="sm" x="485" y="282" text-anchor="middle">· 脚本是 CRLF 换行？</text>
+  <rect class="bx" x="590" y="174" width="150" height="140" rx="10"/>
+  <text class="sm" x="665" y="198" text-anchor="middle">被强制杀死</text>
+  <text class="mono" x="665" y="222" text-anchor="middle" style="font-size:10.5px">.State.OOMKilled</text>
+  <text class="sm" x="665" y="246" text-anchor="middle">true → 加内存</text>
+  <text class="sm" x="665" y="264" text-anchor="middle">或修内存泄漏</text>
+  <text class="sm" x="665" y="282" text-anchor="middle">false → 被 stop 了</text>
+</svg>
+<figcaption>图 17-2　“一启动就退出”的决策树</figcaption>
+</figure>
+
+<h3>几个经典案例</h3>
+
+<div class="code" data-lang="text">
+<pre>
+# 案例 A：运行 ubuntu 却秒退
+$ docker run -d ubuntu
+$ docker ps -a
+... ubuntu  "/bin/bash"  Exited (0) 1 second ago
+# 原因：ubuntu 的默认命令是 bash，没有 -it 时读不到输入，立刻结束。
+# 解决：交互用 docker run -it ubuntu；想让它挂着就给一个长期运行的命令：
+$ docker run -d ubuntu sleep infinity
+
+# 案例 B：退出码 1，日志里写着原因
+$ docker run -d --name db postgres:17
+$ docker logs db
+Error: Database is uninitialized and superuser password is not specified.
+       You must specify POSTGRES_PASSWORD to a non-empty value for the superuser.
+# 解决：按提示传入环境变量
+$ docker run -d --name db -e POSTGRES_PASSWORD=secret postgres:17
+
+# 案例 C：exec format error —— 架构不匹配
+$ docker logs myapp
+exec /app/server: exec format error
+# 原因：在 M 系列 Mac（arm64）上构建的镜像，拿到 amd64 服务器上运行（或反过来）。
+# 解决：构建时指定平台，或构建多架构镜像（第 8 章）
+$ docker build --platform linux/amd64 -t myapp .
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; Windows 用户的隐形杀手：CRLF 换行</div>
+  <p>
+    在 Windows 上编辑的 <code>entrypoint.sh</code> 默认是 CRLF 换行，复制进 Linux 容器后，第一行会变成 <code>#!/bin/sh\r</code>，
+    报错往往是莫名其妙的 <code>no such file or directory</code>（明明文件就在那里）。把编辑器改成 LF 换行，或在仓库里加 <code>.gitattributes</code>：<code>*.sh text eol=lf</code>。
+  </p>
+</div>
+
+<h2 id="unreachable">问题二：容器在运行，但浏览器访问不到</h2>
+
+<p><strong>症状：</strong><code>docker ps</code> 显示 <code>Up</code>，但浏览器打开 <code>localhost:8080</code> 转圈、拒绝连接或返回空响应。</p>
+
+<p>请求要经过三关，逐关检查：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="从浏览器到容器内应用要经过三关">
+  <rect class="bx-b" x="20" y="90" width="120" height="60" rx="10"/>
+  <text class="ttl on-b" x="80" y="116" text-anchor="middle">浏览器</text>
+  <text class="mono" x="80" y="136" text-anchor="middle">:8080</text>
+  <path class="ln-a" d="M142 120 H196" marker-end="url(#ar-a)"/>
+  <rect class="bx-p" x="200" y="80" width="150" height="80" rx="10"/>
+  <text class="ttl on-p" x="275" y="106" text-anchor="middle">第 1 关</text>
+  <text class="sm" x="275" y="126" text-anchor="middle">端口映射存在吗？</text>
+  <text class="mono" x="275" y="146" text-anchor="middle">docker port</text>
+  <path class="ln-a" d="M352 120 H406" marker-end="url(#ar-a)"/>
+  <rect class="bx-g" x="410" y="80" width="150" height="80" rx="10"/>
+  <text class="ttl on-g" x="485" y="106" text-anchor="middle">第 2 关</text>
+  <text class="sm" x="485" y="126" text-anchor="middle">容器端口写对了吗？</text>
+  <text class="sm" x="485" y="146" text-anchor="middle">应用真在听这个端口？</text>
+  <path class="ln-a" d="M562 120 H616" marker-end="url(#ar-a)"/>
+  <rect class="bx-a" x="620" y="80" width="130" height="80" rx="10"/>
+  <text class="ttl on-a" x="685" y="106" text-anchor="middle">第 3 关</text>
+  <text class="sm" x="685" y="126" text-anchor="middle">听的是 0.0.0.0</text>
+  <text class="sm" x="685" y="146" text-anchor="middle">还是 127.0.0.1？</text>
+  <text class="sm" x="275" y="190" text-anchor="middle">没映射 / 左右写反</text>
+  <text class="sm" x="485" y="190" text-anchor="middle">-p 8080:80 但应用在 3000</text>
+  <text class="sm" x="685" y="190" text-anchor="middle">最隐蔽、最常见</text>
+  <text class="lbl" x="380" y="240" text-anchor="middle">另外别忘了：云服务器的安全组 / 防火墙是否放行了这个端口</text>
+</svg>
+<figcaption>图 17-3　请求要闯过的三关</figcaption>
+</figure>
+
+<h3>第 3 关详解：监听地址</h3>
+
+<p>这是最让初学者抓狂的问题。很多开发服务器（Flask、Vite、Rails、Next.js 的某些模式……）默认只监听 <code>127.0.0.1</code>。在你电脑上直接运行没问题，放进容器就访问不到了：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 260" role="img" aria-label="容器内应用监听 127.0.0.1 时，端口转发的流量无法到达">
+  <text class="ttl on-r" x="190" y="24" text-anchor="middle">✗ 监听 127.0.0.1</text>
+  <rect class="bx" x="20" y="36" width="340" height="190" rx="14"/>
+  <text class="sm" x="340" y="58" text-anchor="end">容器（独立的网络命名空间）</text>
+  <rect class="bx-d" x="40" y="72" width="140" height="44" rx="8"/><text class="mono" x="110" y="99" text-anchor="middle">eth0 172.17.0.2</text>
+  <rect class="bx-d" x="200" y="72" width="140" height="44" rx="8"/><text class="mono" x="270" y="99" text-anchor="middle">lo 127.0.0.1</text>
+  <rect class="bx-a" x="200" y="150" width="140" height="50" rx="8"/><text class="sm on-a" x="270" y="172" text-anchor="middle">应用</text><text class="mono" x="270" y="190" text-anchor="middle">127.0.0.1:5000</text>
+  <path class="ln-a" d="M270 118 V146"/>
+  <path class="ln-r" d="M110 30 V68" marker-end="url(#ar-r)"/>
+  <text class="sm on-r" x="110" y="140" text-anchor="middle">转发来的请求</text>
+  <text class="sm on-r" x="110" y="158" text-anchor="middle">到了 eth0，</text>
+  <text class="sm on-r" x="110" y="176" text-anchor="middle">没人在听</text>
+
+  <text class="ttl on-g" x="570" y="24" text-anchor="middle">✓ 监听 0.0.0.0</text>
+  <rect class="bx" x="400" y="36" width="340" height="190" rx="14"/>
+  <text class="sm" x="720" y="58" text-anchor="end">容器</text>
+  <rect class="bx-d" x="420" y="72" width="140" height="44" rx="8"/><text class="mono" x="490" y="99" text-anchor="middle">eth0 172.17.0.2</text>
+  <rect class="bx-d" x="580" y="72" width="140" height="44" rx="8"/><text class="mono" x="650" y="99" text-anchor="middle">lo 127.0.0.1</text>
+  <rect class="bx-g" x="480" y="150" width="200" height="50" rx="8"/><text class="sm on-g" x="580" y="172" text-anchor="middle">应用</text><text class="mono" x="580" y="190" text-anchor="middle">0.0.0.0:5000（所有网卡）</text>
+  <path class="ln-g" d="M490 118 L540 146"/><path class="ln-g" d="M650 118 L620 146"/>
+  <path class="ln-g" d="M490 30 V68" marker-end="url(#ar-g)"/>
+  <text class="lbl" x="380" y="250" text-anchor="middle">容器里的 127.0.0.1 只属于容器自己，外面转发进来的流量走的是 eth0</text>
+</svg>
+<figcaption>图 17-4　应用必须监听 0.0.0.0 才能被端口映射访问到</figcaption>
+</figure>
+
+<div class="code" data-lang="bash">
+<pre>
+# 进容器看看应用到底在听哪个地址、哪个端口
+$ docker exec web sh -c "netstat -tlnp 2>/dev/null || ss -tlnp"
+Proto  Local Address      State    PID/Program
+tcp    127.0.0.1:5000     LISTEN   1/python          &lt;&lt;---- 问题在这里
+
+# 常见框架的修复方式
+$ flask run --host=0.0.0.0
+$ npx vite --host 0.0.0.0
+$ uvicorn app:app --host 0.0.0.0 --port 8000
+</pre>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 其他几个“访问不到”的原因</div>
+  <ul>
+    <li><strong>端口被占用：</strong><code>docker run</code> 报 <code>port is already allocated</code> 或 <code>address already in use</code>。换一个主机端口，或者找出占用者：<code>lsof -i :8080</code>（Mac/Linux）、<code>netstat -ano | findstr 8080</code>（Windows）。</li>
+    <li><strong>应用还没启动完：</strong>Java、大型 Node 应用可能要十几秒才开始监听，先 <code>docker logs -f</code> 看到“Listening on…”再访问。</li>
+    <li><strong>用了 Multipass / 远程主机：</strong><code>localhost</code> 指的是你的电脑，要换成虚拟机或服务器的 IP。</li>
+  </ul>
+</div>
+
+<h2 id="interconnect">问题三：容器之间连不上</h2>
+
+<p><strong>症状：</strong>后端日志里出现 <code>Connection refused</code>、<code>Name or service not known</code>、<code>getaddrinfo ENOTFOUND db</code>、<code>could not translate host name</code>。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="容器互联的四个常见错误">
+  <rect class="bx-r" x="20" y="20" width="350" height="120" rx="12"/>
+  <text class="ttl on-r" x="40" y="44">错误 1：用 localhost 访问另一个容器</text>
+  <text class="mono" x="40" y="70">DB_HOST=localhost  ✗</text>
+  <text class="sm" x="40" y="94">localhost 是“容器自己”，不是数据库容器</text>
+  <text class="mono on-g" x="40" y="122">DB_HOST=db（服务名 / 容器名）✓</text>
+
+  <rect class="bx-r" x="390" y="20" width="350" height="120" rx="12"/>
+  <text class="ttl on-r" x="410" y="44">错误 2：在默认 bridge 网络上用名字</text>
+  <text class="sm" x="410" y="70">默认 bridge 网络没有内置 DNS（第 13 章）</text>
+  <text class="sm" x="410" y="94">只能用 IP，而 IP 每次都可能变</text>
+  <text class="mono on-g" x="410" y="122">docker network create app-net ✓</text>
+
+  <rect class="bx-r" x="20" y="160" width="350" height="120" rx="12"/>
+  <text class="ttl on-r" x="40" y="184">错误 3：两个容器不在同一网络</text>
+  <text class="sm" x="40" y="210">两个 Compose 项目各有自己的 default 网络</text>
+  <text class="sm" x="40" y="234">跨项目访问要加入同一个外部网络</text>
+  <text class="mono on-g" x="40" y="262">networks: { shared: { external: true } } ✓</text>
+
+  <rect class="bx-r" x="390" y="160" width="350" height="120" rx="12"/>
+  <text class="ttl on-r" x="410" y="184">错误 4：用了主机映射的端口</text>
+  <text class="sm" x="410" y="210">db 映射了 -p 15432:5432，</text>
+  <text class="sm" x="410" y="234">容器之间要用容器端口 5432，而不是 15432</text>
+  <text class="mono on-g" x="410" y="262">postgres://db:5432/app ✓</text>
+</svg>
+<figcaption>图 17-5　容器互联最常见的四个错误</figcaption>
+</figure>
+
+<p>用一个临时容器，站在“同一个网络里”测试连通性，能快速定位问题：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+# 1. 两个容器在不在同一个网络？
+$ docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' api db
+myapp_default
+myapp_default
+
+# 2. 在同一个网络里起一个工具容器：名字能解析吗？端口通吗？
+$ docker run --rm -it --network myapp_default nicolaka/netshoot
+~ # nslookup db               # DNS 解析
+~ # nc -zv db 5432            # 端口连通性
+db (172.20.0.3:5432) open
+</pre>
+</div>
+
+<h3>容器访问宿主机上的服务</h3>
+
+<p>另一种常见需求是反过来：容器里的应用要访问<strong>宿主机上</strong>运行的数据库或 API。这时同样不能用 <code>localhost</code>：</p>
+
+<div class="tw"><table>
+  <tr><th>环境</th><th>容器里用什么地址访问宿主机</th></tr>
+  <tr><td>Docker Desktop（Mac / Windows / Linux）</td><td><code>host.docker.internal</code>（开箱即用）</td></tr>
+  <tr><td>Linux 上的 Docker Engine</td><td>启动时加 <code>--add-host=host.docker.internal:host-gateway</code>，然后同样用 <code>host.docker.internal</code></td></tr>
+</table></div>
+
+<div class="box warn">
+  <div class="t">&#9888; 宿主机服务也要监听对地址</div>
+  <p>宿主机上的数据库如果只监听 <code>127.0.0.1</code>，容器照样连不上 —— 和图 17-4 是同一个道理，只是方向反过来了。</p>
+</div>
+
+<h3>“连接被拒绝”但过一会儿又好了</h3>
+
+<p>
+  这通常是<strong>启动顺序</strong>问题：后端先起来了，数据库还在初始化。<code>depends_on</code> 的简单写法只等容器“启动”，不等服务“就绪”。
+  解决办法是第 9 章讲过的 <code>healthcheck</code> + <code>condition: service_healthy</code>，同时让应用自己具备重试能力（生产环境里依赖随时可能短暂不可用）。
+</p>
+
+<h2 id="build">问题四：镜像构建失败</h2>
+
+<div class="tw"><table>
+  <tr><th>报错 / 症状</th><th>原因</th><th>解决</th></tr>
+  <tr><td><code>COPY failed: file not found</code><br><code>"/app.js": not found</code></td><td>文件不在构建上下文里；被 <code>.dockerignore</code> 排除了；路径大小写不对；构建命令在错误的目录执行</td><td>确认在正确目录执行 <code>docker build .</code>；检查 .dockerignore；路径相对于上下文，不能用 <code>../</code></td></tr>
+  <tr><td>改了代码，镜像里还是旧的</td><td>改完没有重新构建；运行的是旧标签；<code>docker compose up</code> 没加 <code>--build</code> 就直接用了旧镜像</td><td><code>docker images</code> 看创建时间；<code>docker compose up --build</code>；实在可疑就 <code>--no-cache</code></td></tr>
+  <tr><td><code>apt-get install</code> 报 404</td><td><code>apt-get update</code> 单独一层被缓存，软件包索引过期</td><td>把 <code>update</code> 和 <code>install</code> 写在同一个 <code>RUN</code> 里</td></tr>
+  <tr><td>在 Mac 上能构建，在 CI / 服务器上失败（或反之）</td><td>CPU 架构不同，某些依赖没有对应架构的二进制</td><td>显式 <code>--platform</code>；选有多架构支持的基础镜像</td></tr>
+  <tr><td>报错被折叠，看不到细节</td><td>BuildKit 默认的紧凑进度输出</td><td><code>docker build --progress=plain .</code>，或 <code>docker buildx history logs</code></td></tr>
+  <tr><td><code>failed to solve: ... no space left on device</code></td><td>构建缓存把磁盘占满了</td><td>见下文“磁盘满了”</td></tr>
+</table></div>
+
+<div class="code" data-lang="bash">
+<pre>
+# 看看构建上下文里到底有哪些文件（利用一个临时构建阶段列出来）
+$ printf 'FROM busybox\nCOPY . /ctx\nRUN find /ctx -maxdepth 2\n' | \
+    docker build --no-cache --progress=plain -f - .
+
+# 查看最近一次构建的详细日志
+$ docker buildx history ls
+$ docker buildx history logs
+</pre>
+</div>
+
+<h2 id="pull">问题五：镜像拉取失败</h2>
+
+<div class="tw"><table>
+  <tr><th>报错</th><th>原因</th><th>解决</th></tr>
+  <tr><td><code>manifest unknown</code> / <code>not found</code></td><td>标签不存在（拼错了、或者这个库没有 <code>latest</code>）</td><td>去 Docker Hub 页面确认标签名</td></tr>
+  <tr><td><code>pull access denied ... repository does not exist or may require 'docker login'</code></td><td>镜像名写错，或者是私有镜像</td><td>检查名字；私有镜像先 <code>docker login</code></td></tr>
+  <tr><td><code>toomanyrequests: You have reached your pull rate limit</code></td><td>Docker Hub 匿名拉取次数超限</td><td><code>docker login</code>；CI 里使用登录凭据或镜像缓存</td></tr>
+  <tr><td><code>no matching manifest for linux/arm64</code></td><td>这个镜像没有你机器架构的版本</td><td>找支持多架构的镜像；或 <code>--platform linux/amd64</code> 走模拟</td></tr>
+  <tr><td>超时、<code>TLS handshake timeout</code></td><td>网络问题：代理、防火墙、访问 Docker Hub 受限</td><td>配置 Docker 代理；在 <code>daemon.json</code> 里配置 <code>registry-mirrors</code> 使用镜像加速</td></tr>
+</table></div>
+
+<div class="code" data-lang="text" data-file="/etc/docker/daemon.json（示例）">
+<pre>
+{
+  "registry-mirrors": ["https://mirror.example.com"],
+  "proxies": {
+    "http-proxy": "http://proxy.example.com:3128",
+    "https-proxy": "http://proxy.example.com:3128",
+    "no-proxy": "localhost,127.0.0.1"
+  }
+}
+</pre>
+</div>
+
+<p>修改后执行 <code>sudo systemctl restart docker</code>。Docker Desktop 用户在 Settings → Resources → Proxies 和 Docker Engine 页面里修改。</p>
+
+<h2 id="disk">问题六：磁盘被占满</h2>
+
+<p><strong>症状：</strong><code>no space left on device</code>；Docker Desktop 的虚拟磁盘越来越大；服务器根分区告急。</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker system df
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          48        6         21.3GB    18.9GB (88%)
+Containers      12        3         1.2GB     1.1GB (91%)
+Local Volumes   9         4         3.4GB     1.8GB (52%)
+Build Cache     214       0         15.7GB    15.7GB          &lt;&lt;---- 构建缓存常常是大头
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="从安全到危险的清理命令">
+  <text class="lbl" x="20" y="24">从安全到危险：</text>
+  <rect class="bx-g" x="20"  y="40" width="170" height="110" rx="10"/>
+  <text class="mono on-g" x="105" y="66" text-anchor="middle">builder prune</text>
+  <text class="sm" x="105" y="90" text-anchor="middle">清理构建缓存</text>
+  <text class="sm" x="105" y="110" text-anchor="middle">下次构建慢一点</text>
+  <text class="sm" x="105" y="130" text-anchor="middle">几乎无风险</text>
+  <rect class="bx-b" x="205" y="40" width="170" height="110" rx="10"/>
+  <text class="mono on-b" x="290" y="66" text-anchor="middle">container prune</text>
+  <text class="mono on-b" x="290" y="86" text-anchor="middle">image prune</text>
+  <text class="sm" x="290" y="110" text-anchor="middle">已停止的容器</text>
+  <text class="sm" x="290" y="130" text-anchor="middle">悬空镜像</text>
+  <rect class="bx-a" x="390" y="40" width="170" height="110" rx="10"/>
+  <text class="mono on-a" x="475" y="66" text-anchor="middle">system prune -a</text>
+  <text class="sm" x="475" y="90" text-anchor="middle">所有未使用的镜像</text>
+  <text class="sm" x="475" y="110" text-anchor="middle">网络、缓存</text>
+  <text class="sm" x="475" y="130" text-anchor="middle">需要重新拉镜像</text>
+  <rect class="bx-r" x="575" y="40" width="165" height="110" rx="10"/>
+  <text class="mono on-r" x="657" y="66" text-anchor="middle">volume prune -a</text>
+  <text class="sm" x="657" y="90" text-anchor="middle">删除未使用的卷</text>
+  <text class="sm on-r" x="657" y="110" text-anchor="middle">数据无法恢复！</text>
+  <text class="sm" x="657" y="130" text-anchor="middle">执行前三思</text>
+  <path class="ln-a" d="M20 172 H736" marker-end="url(#ar-a)"/>
+  <text class="sm" x="380" y="192" text-anchor="middle">危险程度递增</text>
+</svg>
+<figcaption>图 17-6　清理命令的风险阶梯</figcaption>
+</figure>
+
+<p>另外两个容易忽视的“磁盘杀手”：</p>
+<ul>
+  <li><strong>容器日志：</strong>默认的 json-file 驱动不限制大小。用 <code>docker inspect -f '{{.LogPath}}' 容器</code> 找到日志文件，看看它有多大；按第 13 章配置 <code>max-size</code>。</li>
+  <li><strong>Docker Desktop 的虚拟磁盘：</strong>清理后空间不会立刻还给宿主机时，可以在 Settings → Resources 里调整磁盘上限，或在 Troubleshoot 里清理 / 重置。</li>
+</ul>
+
+<h2 id="perm">问题七：权限问题</h2>
+
+<h3>permission denied … docker.sock</h3>
+
+<div class="code" data-lang="text">
+<pre>
+permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock
+</pre>
+</div>
+
+<p>你的用户不在 <code>docker</code> 组里（第 3 章）。<code>sudo usermod -aG docker $USER</code> 后<strong>必须重新登录</strong>（或 <code>newgrp docker</code>）才生效 —— 很多人卡在“加了组还是不行”，就是因为没重新登录。</p>
+
+<h3>绑定挂载的目录写不进去</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="容器内外按 UID 数字判断文件权限">
+  <rect class="bx" x="20" y="30" width="320" height="130" rx="12"/>
+  <text class="ttl" x="40" y="54">宿主机 ~/project/data</text>
+  <text class="mono" x="40" y="84">所有者 UID 1000（你）</text>
+  <text class="mono" x="40" y="108">权限 drwxr-xr-x</text>
+  <text class="sm" x="40" y="136">只有 UID 1000 能写</text>
+  <path class="ln-a" d="M342 95 H416" marker-end="url(#ar-a)"/>
+  <text class="sm" x="379" y="86" text-anchor="middle">bind mount</text>
+  <rect class="bx-a" x="420" y="30" width="320" height="130" rx="12"/>
+  <text class="ttl on-a" x="440" y="54">容器 /app/data</text>
+  <text class="mono" x="440" y="84">进程以 USER node 运行</text>
+  <text class="mono" x="440" y="108">node = UID 1000 ✓</text>
+  <text class="mono on-r" x="440" y="136">若是 UID 999 → 写入失败 ✗</text>
+  <text class="lbl" x="380" y="188" text-anchor="middle">内核只认 UID 数字，不认用户名：容器内外的 UID 对上了才有权限</text>
+</svg>
+<figcaption>图 17-7　权限看的是 UID 数字</figcaption>
+</figure>
+
+<ul>
+  <li>让容器用你的 UID 运行：<code>docker run --user "$(id -u):$(id -g)" …</code>，Compose 里写 <code>user: "1000:1000"</code>；</li>
+  <li>或者在 Dockerfile 里创建一个 UID 与宿主机一致的用户；</li>
+  <li>生产数据用<strong>卷</strong>而不是绑定挂载，可以在 Dockerfile 里提前 <code>chown</code> 好挂载点目录，避开大部分权限问题；</li>
+  <li>Fedora / RHEL 等启用 SELinux 的系统上，绑定挂载可能需要加 <code>:z</code> 或 <code>:Z</code> 标签：<code>-v ./data:/data:Z</code>。</li>
+</ul>
+
+<h2 id="slow">问题八：又慢又卡</h2>
+
+<div class="tw"><table>
+  <tr><th>症状</th><th>排查</th><th>常见原因与解决</th></tr>
+  <tr><td>容器莫名重启，退出码 137</td><td><code>docker inspect -f '{{.State.OOMKilled}}'</code>、<code>docker events</code></td><td>内存上限太低或内存泄漏；调大 <code>--memory</code> 或修复程序</td></tr>
+  <tr><td>整台机器变卡</td><td><code>docker stats</code></td><td>某个容器吃满 CPU/内存；给它加 <code>--cpus</code>、<code>--memory</code> 限制</td></tr>
+  <tr><td>Mac / Windows 上 <code>npm install</code>、编译极慢</td><td>对比在卷里和在绑定挂载目录里的速度</td><td>绑定挂载要跨越虚拟机边界。把 <code>node_modules</code> 等放进命名卷；Docker Desktop 开启 VirtioFS / 同步文件共享</td></tr>
+  <tr><td>Apple 芯片 Mac 上某个镜像特别慢</td><td><code>docker inspect -f '{{.Architecture}}' 镜像</code></td><td>跑的是 amd64 镜像，靠模拟运行。换用 arm64 / 多架构镜像</td></tr>
+</table></div>
+
+<h2 id="table">速查总表</h2>
+
+<div class="tw"><table>
+  <tr><th>症状</th><th>先运行</th><th>最常见的原因</th></tr>
+  <tr><td>容器秒退</td><td><code>docker ps -a</code> → <code>docker logs</code></td><td>缺环境变量；主进程不是前台进程；命令写错</td></tr>
+  <tr><td>容器反复重启</td><td><code>docker events</code>、<code>docker logs</code></td><td>应用崩溃 + 重启策略；OOM</td></tr>
+  <tr><td>访问不到端口</td><td><code>docker port</code>、容器内 <code>ss -tlnp</code></td><td>应用监听 127.0.0.1；容器端口写错</td></tr>
+  <tr><td>容器间连不上</td><td><code>docker network inspect</code>、netshoot</td><td>用了 localhost；不在同一自定义网络</td></tr>
+  <tr><td>COPY 找不到文件</td><td>检查构建目录和 <code>.dockerignore</code></td><td>上下文不对；文件被忽略</td></tr>
+  <tr><td>exec format error</td><td><code>docker inspect</code> 看 Architecture</td><td>CPU 架构不匹配</td></tr>
+  <tr><td>拉取失败</td><td>看完整报错</td><td>标签不存在；频率限制；网络/代理</td></tr>
+  <tr><td>磁盘满</td><td><code>docker system df</code></td><td>构建缓存、旧镜像、日志</td></tr>
+  <tr><td>权限被拒</td><td><code>id</code>、<code>ls -ln</code></td><td>不在 docker 组；UID 不匹配</td></tr>
+</table></div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>排错按五步走：看状态 → 看日志 → 看配置 → 进去看 → 缩小范围。<code>docker logs</code> 能解决大部分问题。</li>
+  <li>退出码是“容器为什么退出”的关键线索：127 命令找不到、137 被强杀（多半是 OOM）、1 看日志。</li>
+  <li>“访问不到”最隐蔽的原因是应用只监听 127.0.0.1；容器里的 localhost 只属于容器自己。</li>
+  <li>容器之间用服务名 + 容器端口通信，并且必须在同一个自定义网络上。</li>
+  <li>用 netshoot 这类工具容器加入目标网络或命名空间，是排查网络问题的利器。</li>
+  <li>磁盘满了先看 <code>docker system df</code>，从风险最低的构建缓存开始清理，卷最后再动。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习：故意把它弄坏</h3>
+  <ol>
+    <li>运行 <code>docker run -d -p 8000:8000 python:3.13-slim python -m http.server --bind 127.0.0.1 8000</code>，确认浏览器访问不到 <code>localhost:8000</code>；再把 <code>--bind</code> 改成 <code>0.0.0.0</code> 重新运行，对比结果，并用图 17-4 解释原因。</li>
+    <li>运行 <code>docker run -d --name oops alpine lss</code>，用本章的方法找出退出码和原因。</li>
+    <li>启动两个容器，一个在默认 bridge 网络，一个在自定义网络，用 netshoot 分别测试名字解析，写下你的结论。</li>
+    <li>用 <code>docker run --memory 20m alpine sh -c "tail /dev/zero"</code> 制造一次 OOM，在另一个终端用 <code>docker events</code> 观察发生了什么事件。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

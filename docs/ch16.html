@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 16 章 · Docker 安全 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="16">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 16 章</span>
+<h1>Docker 安全</h1>
+<p class="lede">
+  如果安全很难做，人们就不太会去做。好在 Docker 的大部分安全措施都很简单，而且预设了合理的默认值 —— 零配置就能得到“还算安全”的体验。
+  本章先讲 Docker 用到的 Linux 安全技术，再讲 Docker 自己的安全技术，最后给出一份可以直接照做的加固清单。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解“纵深防御”：命名空间、cgroups、capabilities、MAC、seccomp 各自防什么</li>
+    <li>理解 Swarm 自带的安全机制：加入令牌、双向 TLS、证书轮换、加密集群存储</li>
+    <li>会用漏洞扫描，了解 Docker Hardened Images</li>
+    <li>知道 Docker Content Trust 已退役，会用 Sigstore Cosign 签名和验证镜像</li>
+    <li>用 Docker 机密（secrets）安全地传递密码等敏感数据</li>
+    <li>掌握一套实用的容器加固参数</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="tldr">一句话概括</h2>
+
+<p>好的安全靠的是<strong>层层设防（纵深防御）</strong>，层数越多越好。Docker 提供了很多层：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="Docker 的纵深防御：多层安全技术包裹着容器">
+  <rect class="bx-d" x="20" y="20" width="720" height="290" rx="18"/>
+  <text class="ttl" x="40" y="44">Docker 安全技术：Scout 扫描 · 镜像签名 · Hardened Images · 机密 · Swarm 双向 TLS</text>
+  <rect class="bx-p" x="50" y="56" width="660" height="240" rx="16"/>
+  <text class="ttl on-p" x="70" y="80">seccomp：限制能调用哪些系统调用</text>
+  <rect class="bx-b" x="80" y="92" width="600" height="196" rx="14"/>
+  <text class="ttl on-b" x="100" y="116">MAC（AppArmor / SELinux）：限制能访问哪些资源</text>
+  <rect class="bx-g" x="110" y="128" width="540" height="152" rx="12"/>
+  <text class="ttl on-g" x="130" y="152">capabilities：只给需要的那几项 root 权限</text>
+  <rect class="bx-a" x="140" y="164" width="480" height="108" rx="10"/>
+  <text class="ttl on-a" x="160" y="188">cgroups：限制能用多少资源</text>
+  <rect class="bx" x="170" y="200" width="420" height="64" rx="10"/>
+  <text class="ttl" x="380" y="226" text-anchor="middle">namespaces：隔离能看到什么</text>
+  <text class="sm" x="380" y="248" text-anchor="middle">容器进程</text>
+</svg>
+<figcaption>图 16-1　一层套一层的安全防护</figcaption>
+</figure>
+
+<p>
+  Docker 利用了常见的 Linux 安全与隔离技术：<strong>命名空间、控制组、capabilities、强制访问控制（MAC）和 seccomp</strong>，并为每一项都提供了合理的默认配置，你也可以按需定制。
+  Docker 还有自己的安全技术：<strong>漏洞扫描</strong>（Docker Scout）、<strong>镜像签名与验证</strong>、<strong>机密管理</strong>等。
+  如果你用 Docker Swarm，还会自动得到：加密的节点 ID、双向 TLS 认证、自动 CA 配置与证书轮换、安全的加入令牌、加密的集群存储、加密网络……
+</p>
+
+<h2 id="linux">Linux 安全技术</h2>
+
+<h3>内核命名空间：隔离</h3>
+
+<p>
+  <strong>命名空间（namespaces）</strong>是构建容器的主要技术。和虚拟机对比一下：Hypervisor 虚拟化的是 CPU、磁盘等<strong>物理资源</strong>，
+  把虚拟 CPU、虚拟磁盘、虚拟网卡组合成看起来像物理机的虚拟机；命名空间虚拟化的是进程树、文件系统等<strong>操作系统结构</strong>，
+  把虚拟进程树、虚拟文件系统、虚拟网卡组合成看起来像普通操作系统的容器。
+</p>
+
+<div class="box key">
+  <div class="t">&#9733; 命名空间只提供轻量隔离，不是强安全边界</div>
+  <p>和虚拟机相比，容器更高效，但虚拟机更安全。所以 Docker 还要叠加 cgroups、capabilities、seccomp 等技术来增强容器安全。</p>
+</div>
+
+<p>每个 Docker 容器都有自己的一组命名空间：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="宿主机的根命名空间与每个容器各自的命名空间">
+  <rect class="bx" x="20" y="20" width="720" height="260" rx="14"/>
+  <text class="ttl" x="40" y="44">Linux 主机（一个内核）</text>
+  <rect class="bx-d" x="40" y="60" width="200" height="200" rx="12"/>
+  <text class="ttl" x="140" y="84" text-anchor="middle">根命名空间（宿主机）</text>
+  <rect class="bx-a" x="280" y="60" width="210" height="200" rx="12"/>
+  <text class="ttl on-a" x="385" y="84" text-anchor="middle">容器 1 的命名空间</text>
+  <rect class="bx-g" x="510" y="60" width="210" height="200" rx="12"/>
+  <text class="ttl on-g" x="615" y="84" text-anchor="middle">容器 2 的命名空间</text>
+  <g>
+    <text class="mono" x="70" y="116">pid</text><text class="mono" x="70" y="140">net</text><text class="mono" x="70" y="164">mnt</text><text class="mono" x="70" y="188">ipc</text><text class="mono" x="70" y="212">user</text><text class="mono" x="70" y="236">uts</text>
+    <text class="mono" x="310" y="116">pid</text><text class="mono" x="310" y="140">net</text><text class="mono" x="310" y="164">mnt</text><text class="mono" x="310" y="188">ipc</text><text class="mono" x="310" y="212">user</text><text class="mono" x="310" y="236">uts</text>
+    <text class="mono" x="540" y="116">pid</text><text class="mono" x="540" y="140">net</text><text class="mono" x="540" y="164">mnt</text><text class="mono" x="540" y="188">ipc</text><text class="mono" x="540" y="212">user</text><text class="mono" x="540" y="236">uts</text>
+    <text class="sm" x="360" y="116">自己的 PID 1</text><text class="sm" x="360" y="140">自己的 eth0</text><text class="sm" x="360" y="164">自己的 / 根目录</text><text class="sm" x="360" y="188">自己的共享内存</text><text class="sm" x="360" y="212">自己的用户</text><text class="sm" x="360" y="236">自己的主机名</text>
+    <text class="sm" x="590" y="116">自己的 PID 1</text><text class="sm" x="590" y="140">自己的 eth0</text><text class="sm" x="590" y="164">自己的 / 根目录</text><text class="sm" x="590" y="188">自己的共享内存</text><text class="sm" x="590" y="212">自己的用户</text><text class="sm" x="590" y="236">自己的主机名</text>
+  </g>
+</svg>
+<figcaption>图 16-2　每个容器都以为自己独占了一台机器</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>命名空间</th><th>Docker 用它做什么</th></tr>
+  <tr><td><strong>pid</strong>（进程 ID）</td><td>每个容器有独立的进程树和自己的 PID 1，看不到其他容器和宿主机的进程</td></tr>
+  <tr><td><strong>net</strong>（网络）</td><td>每个容器有独立的网络栈：网卡、IP、端口范围、路由表。比如每个容器都有自己的 eth0</td></tr>
+  <tr><td><strong>mnt</strong>（挂载 / 文件系统）</td><td>每个容器有独立的根文件系统（自己的 /etc、/var、/dev），看不到宿主机和其他容器的文件系统</td></tr>
+  <tr><td><strong>ipc</strong>（进程间通信）</td><td>容器内的共享内存访问，并与宿主机和其他容器的共享内存隔离</td></tr>
+  <tr><td><strong>user</strong>（用户）</td><td>容器内的用户只在容器内有效，还可以把容器的 root 映射成宿主机上的普通用户</td></tr>
+  <tr><td><strong>uts</strong></td><td>每个容器有自己的主机名</td></tr>
+</table></div>
+
+<p>记住：<strong>容器就是一组被 Docker 组织起来、看起来像一个普通操作系统的命名空间。</strong></p>
+
+<div class="box tip">
+  <div class="t">&#128161; 亲眼看看命名空间</div>
+  <p>在 Linux 主机上启动一个容器，找到它的主进程 PID（<code>docker inspect -f '{{.State.Pid}}' 容器名</code>），然后 <code>sudo ls -l /proc/&lt;PID&gt;/ns</code>，就能看到它所属的各个命名空间。
+    和 <code>ls -l /proc/1/ns</code>（宿主机的 init 进程）对比，编号都不一样。</p>
+</div>
+
+<h3>控制组：限制</h3>
+
+<p>
+  如果说命名空间管的是<strong>隔离</strong>，<strong>控制组（cgroups）</strong>管的就是<strong>限制</strong>。
+  把容器想象成酒店的房间：每个房间看起来是独立的，但它们共享供水、供电、空调、泳池、健身房、电梯、早餐……
+  容器也一样，虽然彼此隔离，但共享宿主机的 CPU、内存、网络 I/O 和磁盘 I/O。
+  Docker 用 cgroups 限制每个容器对这些共享资源的使用，防止某个容器吃光资源、造成拒绝服务（DoS）。第 7 章的 <code>--memory</code>、<code>--cpus</code> 就是在设置 cgroups。
+</p>
+
+<div class="box new">
+  <div class="t">&#10024; 最新变化：cgroup v1 已弃用</div>
+  <p>现代 Linux 发行版都默认使用 <strong>cgroup v2</strong>（统一层级）。Docker Engine 29 已将 cgroup v1 支持标记为弃用（会保留到 2029 年 5 月）。如果你还在用很老的系统，请规划升级。</p>
+</div>
+
+<h3>Capabilities：最小权限</h3>
+
+<p>
+  Linux 的 root 用户权力极大，不应该用它来运行应用和容器。但简单地改用普通用户也不行 —— 大多数普通用户权限太小，几乎什么都干不了。
+  我们需要的是：让应用和容器<strong>恰好</strong>拥有它需要的权限，不多也不少。<strong>Capabilities</strong> 就是答案。
+</p>
+<p>在底层，root 的权力其实是一长串 capabilities 的组合，比如：</p>
+
+<div class="tw"><table>
+  <tr><th>Capability</th><th>允许做什么</th></tr>
+  <tr><td><code>CAP_CHOWN</code></td><td>修改文件所有者</td></tr>
+  <tr><td><code>CAP_NET_BIND_SERVICE</code></td><td>绑定 1024 以下的端口</td></tr>
+  <tr><td><code>CAP_SETUID</code></td><td>提升进程的权限级别</td></tr>
+  <tr><td><code>CAP_SYS_BOOT</code></td><td>重启系统</td></tr>
+  <tr><td>……</td><td>还有几十项</td></tr>
+</table></div>
+
+<p>
+  Docker 可以让容器以 root 启动，但去掉所有不需要的 capabilities。比如容器只需要绑定低端口，那就启动后<strong>丢掉所有 capabilities，再只加回</strong> <code>CAP_NET_BIND_SERVICE</code>。
+  这是<strong>最小权限原则</strong>的完美体现。Docker 还会阻止容器重新加回被丢弃的 capabilities。
+</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker run -d --cap-drop ALL --cap-add NET_BIND_SERVICE -p 80:80 my-web-app
+</pre>
+</div>
+
+<p>Docker 默认已经去掉了很多危险的 capabilities，但生产应用最好自己配置。不过自定义需要大量工作和测试。</p>
+
+<h3>强制访问控制（MAC）</h3>
+
+<p>
+  Docker 支持 Linux 主流的 MAC 技术 <strong>AppArmor</strong> 和 <strong>SELinux</strong>。根据发行版不同，Docker 会给所有新容器应用默认的 AppArmor 或 SELinux 配置文件。
+  按照 Docker 文档的说法，默认配置“提供适度的保护，同时兼顾广泛的应用兼容性”。你可以让容器不使用这些策略，也可以编写自己的策略 —— 同样很强大，但需要大量工作和测试。
+</p>
+
+<h3>seccomp：限制系统调用</h3>
+
+<p>
+  应用通过<strong>系统调用（syscall）</strong>请求 Linux 内核做事。Linux 有 300 多个系统调用，Docker 用 <strong>seccomp</strong> 限制容器能向内核发起哪些调用，
+  默认配置禁用了其中大约 40–50 个危险的调用，在不影响兼容性的前提下提供适度安全。
+  你可以自定义 seccomp 配置，或者让容器不使用它。可惜系统调用表很长，自定义 seccomp 策略对很多人来说可能过于复杂。
+</p>
+
+<h3>小结：Linux 安全技术</h3>
+
+<p>
+  Docker 支持大部分重要的 Linux 安全技术，并提供了“加了安全又不会太束手束脚”的默认值。其中一些技术需要内核知识，定制起来可能很复杂，但默认配置已经是很好的起点。
+</p>
+
+<h2 id="swarm">Swarm 安全</h2>
+
+<p>Swarm 模式包含很多 Docker 自动配置好的安全功能：</p>
+
+<div class="cards">
+  <div class="card"><h4>加密节点 ID</h4><p>每个节点都有密码学意义上唯一的身份。</p></div>
+  <div class="card"><h4>双向 TLS</h4><p>节点之间互相认证、通信加密。</p></div>
+  <div class="card"><h4>安全的加入令牌</h4><p>管理节点和工作节点各有一个令牌。</p></div>
+  <div class="card"><h4>CA 与证书自动轮换</h4><p>内置证书颁发机构，默认 90 天轮换。</p></div>
+  <div class="card"><h4>加密的集群存储</h4><p>基于 etcd / Raft，自动复制到所有管理节点。</p></div>
+  <div class="card"><h4>加密网络</h4><p>第 14 章的 <code>-o encrypted</code>。</p></div>
+</div>
+
+<h3>搭建一个安全的 swarm</h3>
+
+<p>你需要三台能用名字互相 ping 通的 Docker 主机，示例中叫 mgr1、mgr2、wrk1。在 mgr1 上：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker swarm init
+Swarm initialized: current node (7xam...662z) is now a manager.
+</pre>
+</div>
+
+<p>
+  就这一条命令，你已经配置了：加密的集群 ID、加密的集群存储、一个证书轮换周期为 90 天的 CA、一组用于加入管理节点和工作节点的安全令牌，
+  并给当前管理节点配置了用于双向 TLS 的客户端证书。这个 CA 只用于 Swarm 内部安全，不要把它挪作他用。
+</p>
+
+<div class="code" data-lang="text">
+<pre>
+mgr1 $ docker swarm join-token manager
+To add a manager to this swarm, run the following command:
+    docker swarm join --token SWMTKN-1-1dmtwu...r17stb-2axi5...8p7glz 172.31.5.251:2377
+
+mgr2 $ docker swarm join --token SWMTKN-1-1dmtwu...r17stb-2axi5...8p7glz 172.31.5.251:2377
+This node joined a swarm as a manager.
+
+mgr1 $ docker swarm join-token worker
+    docker swarm join --token SWMTKN-1-1dmtw...17stb-ehp8g...w738q 172.31.5.251:2377
+
+wrk1 $ docker swarm join --token SWMTKN-1-1dmtw...17stb-ehp8g...w738q 172.31.5.251:2377
+This node joined a swarm as a worker.
+
+mgr1 $ docker node ls
+ID                 HOSTNAME   STATUS   AVAILABILITY   MANAGER STATUS
+7xamk...ge662z *   mgr1       Ready    Active         Leader
+ailrd...ofzv1u     wrk1       Ready    Active
+i0ue4...zcjm7f     mgr2       Ready    Active         Reachable
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="安全的 swarm：管理节点共享加密集群存储，所有节点通过双向 TLS 通信">
+  <rect class="bx-a" x="40" y="30" width="200" height="120" rx="12"/>
+  <text class="ttl on-a" x="140" y="56" text-anchor="middle">mgr1 · Leader</text>
+  <text class="sm" x="140" y="78" text-anchor="middle">客户端证书</text>
+  <text class="sm" x="140" y="96" text-anchor="middle">CA（swarm-ca）</text>
+  <rect class="bx-p" x="60" y="108" width="160" height="30" rx="6"/><text class="sm on-p" x="140" y="128" text-anchor="middle">加密集群存储副本</text>
+  <rect class="bx-a" x="520" y="30" width="200" height="120" rx="12"/>
+  <text class="ttl on-a" x="620" y="56" text-anchor="middle">mgr2 · Reachable</text>
+  <text class="sm" x="620" y="78" text-anchor="middle">客户端证书</text>
+  <rect class="bx-p" x="540" y="108" width="160" height="30" rx="6"/><text class="sm on-p" x="620" y="128" text-anchor="middle">加密集群存储副本</text>
+  <rect class="bx-g" x="280" y="170" width="200" height="66" rx="12"/>
+  <text class="ttl on-g" x="380" y="196" text-anchor="middle">wrk1 · Worker</text>
+  <text class="sm" x="380" y="218" text-anchor="middle">客户端证书 · 无权访问集群存储</text>
+  <path class="ln-a" d="M242 90 H516" style="stroke-dasharray:6 4"/>
+  <text class="sm on-a" x="380" y="82" text-anchor="middle">双向 TLS · Raft 复制</text>
+  <path class="ln-g" d="M200 152 L300 186" style="stroke-dasharray:6 4"/>
+  <path class="ln-g" d="M560 152 L460 186" style="stroke-dasharray:6 4"/>
+  <text class="sm on-g" x="230" y="190">mTLS</text><text class="sm on-g" x="500" y="190">mTLS</text>
+</svg>
+<figcaption>图 16-3　两个管理节点 + 一个工作节点的安全 swarm</figcaption>
+</figure>
+
+<p>管理节点做了高可用，集群存储复制到了两个管理节点上；工作节点是 swarm 的一员，但不能访问集群存储。现实中请始终使用 3 或 5 个管理节点。</p>
+
+<h3>加入令牌</h3>
+
+<p>
+  加入 swarm 的<strong>唯一</strong>条件就是持有加入令牌。所以要妥善保管它们，<strong>绝不要</strong>发到公共仓库，甚至不要发到权限不受限的内部仓库。
+  每个 swarm 有两个令牌（管理节点令牌、工作节点令牌），每个令牌由四个用短横线分隔的字段组成：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="Swarm 加入令牌的四个字段">
+  <text class="mono" x="380" y="44" text-anchor="middle" style="font-size:19px"><tspan style="fill:var(--blue)">SWMTKN</tspan><tspan style="fill:var(--fg-faint)">-</tspan><tspan style="fill:var(--green)">1</tspan><tspan style="fill:var(--fg-faint)">-</tspan><tspan style="fill:var(--accent)">1dmtwusdc…r17stb</tspan><tspan style="fill:var(--fg-faint)">-</tspan><tspan style="fill:var(--purple)">2axi53zjbs45lqxykaw8p7glz</tspan></text>
+  <rect class="bx-b" x="40" y="70" width="140" height="80" rx="8"/><text class="ttl on-b" x="110" y="94" text-anchor="middle">前缀</text><text class="sm" x="110" y="116" text-anchor="middle">固定为 SWMTKN</text><text class="sm" x="110" y="134" text-anchor="middle">便于扫描防泄露</text>
+  <rect class="bx-g" x="195" y="70" width="110" height="80" rx="8"/><text class="ttl on-g" x="250" y="94" text-anchor="middle">版本</text><text class="sm" x="250" y="116" text-anchor="middle">swarm 版本</text>
+  <rect class="bx-a" x="320" y="70" width="190" height="80" rx="8"/><text class="ttl on-a" x="415" y="94" text-anchor="middle">Swarm ID</text><text class="sm" x="415" y="116" text-anchor="middle">swarm 证书的哈希</text><text class="sm" x="415" y="134" text-anchor="middle">两个令牌相同</text>
+  <rect class="bx-p" x="525" y="70" width="195" height="80" rx="8"/><text class="ttl on-p" x="622" y="94" text-anchor="middle">令牌</text><text class="sm" x="622" y="116" text-anchor="middle">决定是管理节点还是</text><text class="sm" x="622" y="134" text-anchor="middle">工作节点 —— 唯一区别</text>
+</svg>
+<figcaption>图 16-4　加入令牌的结构</figcaption>
+</figure>
+
+<p>如果怀疑令牌泄露，一条命令就能作废旧令牌并生成新令牌。已有的管理节点不受影响，但以后只能用新令牌加入：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker swarm join-token --rotate manager
+Successfully rotated manager join token.
+</pre>
+</div>
+
+<h3>TLS 与双向认证</h3>
+
+<p>Docker 给每个管理节点和工作节点颁发一张客户端证书，用于双向认证。证书标识了节点身份、所属 swarm 以及它是管理节点还是工作节点：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ sudo openssl x509 -in /var/lib/docker/swarm/certificates/swarm-node.crt -text
+Certificate:
+    Data:
+        Signature Algorithm: ecdsa-with-SHA256
+        Issuer: CN = swarm-ca
+        Validity
+            Not Before: Sep 22 08:23:00 2026 GMT
+            Not After : Dec 21 09:23:00 2026 GMT                 &lt;&lt;---- 90 天有效期
+        Subject: O = tcz3w1t7yu0s4wacovn1rtgp4,                  &lt;&lt;---- O  = Swarm ID
+                 OU = swarm-manager,                             &lt;&lt;---- OU = 节点角色
+                 CN = 2gxz2h1f0rnmc3atm35qcd1zw                  &lt;&lt;---- CN = 节点 ID
+</pre>
+</div>
+
+<p>这些值可以和 <code>docker info</code> 的输出对上（<code>ClusterID</code> 对应 O，<code>Is Manager</code> 对应 OU，<code>NodeID</code> 对应 CN，<code>CA Configuration → Expiry Duration</code> 对应有效期）。</p>
+
+<h3>CA 配置与集群存储</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker swarm update --cert-expiry 720h      # 把证书轮换周期改成 30 天
+$ docker swarm ca --rotate                    # 轮换根 CA
+$ docker swarm init --external-ca …           # 新建 swarm 时使用外部 CA
+</pre>
+</div>
+
+<p>Swarm 允许节点提前续期证书，避免所有节点在同一时刻更新。</p>
+
+<p>
+  <strong>集群存储</strong>保存着 swarm 的配置和状态，overlay 网络和机密等功能也依赖它 —— 这就是 overlay 网络和很多高级安全功能只能在 swarm 模式下用的原因。
+  集群存储基于流行的 etcd 分布式数据库（Raft），自动加密并复制到所有管理节点。日常维护 Docker 会处理，但生产集群一定要有可靠的备份和恢复方案。
+  还可以开启 <code>docker swarm update --autolock=true</code>，让管理节点重启后必须提供解锁密钥才能解密集群存储。
+</p>
+
+<h2 id="scan">漏洞扫描与加固镜像</h2>
+
+<p>
+  每个容器都运行着多个软件包，而这些包都可能有被攻击者利用的缺陷和漏洞。
+  <strong>镜像扫描</strong>会分析镜像，列出它用到的所有软件包，这份清单叫<strong>软件物料清单（SBOM）</strong>；
+  扫描系统再把 SBOM 和已知漏洞数据库比对，给出漏洞报告，大多数扫描器还会给漏洞评级并提供修复建议。漏洞扫描已经是软件供应链中不可或缺的一环。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="镜像扫描流程：镜像生成 SBOM，比对漏洞数据库，输出报告">
+  <rect class="bx-a" x="20" y="50" width="140" height="70" rx="10"/><text class="ttl on-a" x="90" y="80" text-anchor="middle">镜像</text><text class="sm" x="90" y="100" text-anchor="middle">tu-demo:latest</text>
+  <path class="ln" d="M162 85 H196" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="200" y="50" width="160" height="70" rx="10"/><text class="ttl on-b" x="280" y="80" text-anchor="middle">SBOM</text><text class="sm" x="280" y="100" text-anchor="middle">66 个软件包及版本</text>
+  <path class="ln" d="M362 85 H396" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="400" y="50" width="160" height="70" rx="10"/><text class="ttl on-p" x="480" y="80" text-anchor="middle">比对 CVE 数据库</text><text class="sm" x="480" y="100" text-anchor="middle">expat 2.5.0 有漏洞</text>
+  <path class="ln" d="M562 85 H596" marker-end="url(#ar)"/>
+  <rect class="bx-r" x="600" y="50" width="140" height="70" rx="10"/><text class="ttl on-r" x="670" y="80" text-anchor="middle">报告</text><text class="sm" x="670" y="100" text-anchor="middle">0C 4H 2M 0L</text>
+  <text class="lbl" x="380" y="150" text-anchor="middle">工具：Docker Scout · Trivy · Grype · 各云厂商的仓库扫描</text>
+</svg>
+<figcaption>图 16-5　漏洞扫描的工作原理</figcaption>
+</figure>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker scout quickview nigelpoulton/tu-demo:latest
+  Target             │  nigelpoulton/tu-demo:latest  │    0C     4H     2M     0L
+  Base image         │  python:3-alpine              │    0C     2H     1M     0L
+  Updated base image │  python:3.13-alpine           │    0C     0H     0M     0L
+
+$ docker scout cves nigelpoulton/tu-demo:latest
+    ✗ Detected 6 vulnerable packages with a total of 8 vulnerabilities
+   0C     1H     1M     0L  expat 2.5.0-r2
+    ✗ HIGH CVE-2023-52425
+      Affected range : &lt;2.6.0-r0
+      Fixed version  : 2.6.0-r0
+    ✗ MEDIUM CVE-2023-52426
+&lt;Snip&gt;
+
+$ trivy image nigelpoulton/tu-demo:latest     # 开源替代：Trivy，结果类似
+</pre>
+</div>
+
+<p>
+  漏洞扫描虽好，但它只扫描镜像，发现不了网络、节点或编排器的安全问题。而且扫描器水平参差不齐：好的会做深入的二进制级扫描，差的只看包名。
+  最后提醒一句：<strong>知道了漏洞，就有责任去修复或缓解它。</strong>
+</p>
+
+<div class="box new">
+  <div class="t">&#10024; 最新变化：Docker Hardened Images 免费了</div>
+  <p>
+    与其扫描出一堆漏洞再去修，不如一开始就用干净的基础镜像。<strong>Docker Hardened Images（DHI）</strong>是 Docker 维护的精简、加固、持续打补丁的基础镜像，
+    通常只有极少甚至零已知漏洞，并附带 SBOM、来源证明和签名。自 <strong>2025 年 12 月起 DHI 对所有人免费</strong>（需要合规认证或 SLA 保障的企业版仍收费）。
+    用法和普通镜像一样，只是把 <code>FROM</code> 换成 DHI 目录里的对应镜像；Docker Desktop 还提供了 <code>dhictl</code> CLI 插件。
+    同类选择还有 Google 的 distroless、Chainguard Images 等。
+  </p>
+</div>
+
+<h2 id="sign">签名与验证镜像</h2>
+
+<p>
+  镜像签名解决的问题是：<strong>我拉到的镜像，真的是它声称的发布者发布的吗？中途有没有被篡改？</strong>这在通过互联网这样的不可信网络拉取镜像时尤为重要。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="镜像签名与验证流程">
+  <rect class="bx-b" x="20" y="60" width="160" height="90" rx="12"/>
+  <text class="ttl on-b" x="100" y="88" text-anchor="middle">发布者</text>
+  <text class="sm" x="100" y="110" text-anchor="middle">用私钥（或身份）</text>
+  <text class="sm" x="100" y="128" text-anchor="middle">签名镜像摘要</text>
+  <path class="ln-a" d="M182 105 H276" marker-end="url(#ar-a)"/>
+  <text class="mono" x="229" y="96" text-anchor="middle">push</text>
+  <rect class="bx-a" x="280" y="40" width="200" height="130" rx="12"/>
+  <text class="ttl on-a" x="380" y="66" text-anchor="middle">OCI 仓库</text>
+  <rect class="bx" x="300" y="80" width="160" height="30" rx="6"/><text class="sm" x="380" y="100" text-anchor="middle">镜像 sha256:b65f…</text>
+  <rect class="bx-p" x="300" y="118" width="160" height="30" rx="6"/><text class="sm on-p" x="380" y="138" text-anchor="middle">签名（关联到摘要）</text>
+  <path class="ln-g" d="M482 105 H576" marker-end="url(#ar-g)"/>
+  <text class="mono" x="529" y="96" text-anchor="middle">pull</text>
+  <rect class="bx-g" x="580" y="60" width="160" height="90" rx="12"/>
+  <text class="ttl on-g" x="660" y="88" text-anchor="middle">使用者</text>
+  <text class="sm" x="660" y="110" text-anchor="middle">用公钥 / 身份策略</text>
+  <text class="sm" x="660" y="128" text-anchor="middle">验证签名 ✓ 才运行</text>
+  <text class="lbl" x="380" y="200" text-anchor="middle">签名绑定的是“摘要”而不是“标签”，所以镜像内容被改动一个字节，验证就会失败</text>
+</svg>
+<figcaption>图 16-6　镜像签名与验证</figcaption>
+</figure>
+
+<h3>Docker Content Trust（已退役）</h3>
+
+<p>
+  原书用 <strong>Docker Content Trust（DCT）</strong>演示镜像签名：用 <code>docker trust key generate</code> 生成密钥对，<code>docker trust signer add</code> 把密钥关联到仓库，
+  <code>docker trust sign</code> 签名并推送，再 <code>export DOCKER_CONTENT_TRUST=1</code> 强制只拉取签过名的镜像。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; DCT 已经退役，不要再用</div>
+  <ul>
+    <li>DCT 依赖的 <strong>Notary v1</strong> 是 2015 年的 TUF 实现，上游早已停止维护，只有不到 0.05% 的 Docker Hub 拉取用到它。</li>
+    <li>Docker 于 2025 年宣布退役 DCT：<strong>Docker Engine 29 已从 CLI 中移除 DCT</strong>，<code>notary.docker.io</code> 从 2026 年 7 月起分阶段停服，将于 <strong>2026 年 12 月 8 日彻底关闭</strong>。</li>
+    <li>官方迁移建议：取消 <code>DOCKER_CONTENT_TRUST</code> 环境变量；用<strong>摘要固定</strong>镜像（第 6 章）；改用 OCI 原生的签名工具 <strong>Sigstore Cosign</strong> 或 <strong>Notary Project 的 Notation</strong>。</li>
+  </ul>
+</div>
+
+<h3>现代做法：用 Cosign 签名</h3>
+
+<p>
+  Sigstore / Cosign 和 Notation 都把签名作为 OCI 制品<strong>和镜像存放在同一个仓库里</strong>，不需要额外维护一套信任基础设施。
+  Cosign 对开发者更友好，支持基于 OIDC 身份的“无密钥（keyless）”签名和透明日志；Notation 更偏规范化，支持多签名并能对接现有 PKI。下面用 Cosign 演示最基本的基于密钥的流程：
+</p>
+
+<div class="code" data-lang="bash">
+<pre>
+# 1. 生成密钥对（会提示输入私钥密码，生成 cosign.key 和 cosign.pub）
+$ cosign generate-key-pair
+
+# 2. 推送镜像，并用摘要（而不是标签）签名
+$ docker push nigelpoulton/ddd-trust:signed
+$ cosign sign --key cosign.key nigelpoulton/ddd-trust@sha256:b65f9a1aa4e6...
+
+# 3. 使用者用公钥验证
+$ cosign verify --key cosign.pub nigelpoulton/ddd-trust:signed
+Verification for index.docker.io/nigelpoulton/ddd-trust:signed --
+The following checks were performed on each of these signatures:
+  - The cosign claims were validated
+  - The signatures were verified against the specified public key
+</pre>
+</div>
+
+<p>在 CI（如 GitHub Actions）里更推荐无密钥签名：<code>cosign sign nigelpoulton/ddd-trust@sha256:…</code>，Cosign 会用 CI 的 OIDC 身份签名，验证时检查签名者身份即可，不用保管任何私钥。</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 附赠：给镜像附上 SBOM 和来源证明</div>
+  <p>
+    BuildKit 可以在构建时生成<strong>证明（attestations）</strong>并随镜像一起推送：
+    <code>docker buildx build --sbom=true --provenance=mode=max -t 镜像 --push .</code>。
+    SBOM 记录镜像里有哪些软件，来源证明（provenance）记录镜像是怎么、在哪里、用什么源码构建的 —— 这些都是现代软件供应链安全（如 SLSA）的基础。
+  </p>
+</div>
+
+<h2 id="secrets">Docker 机密</h2>
+
+<p>
+  大多数应用都会用到密码、证书、SSH 密钥这类敏感数据。千万别把它们写进镜像、环境变量或 Compose 文件里！Docker 提供了<strong>机密（secrets）</strong>来安全地保管它们。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; 注意</div>
+  <p>Swarm 的机密功能依赖集群存储，因此只能在 swarm 模式下使用。单机 Compose 也支持一种基于文件的 secrets（见下文）。</p>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="Swarm 机密的五步工作流">
+  <rect class="bx-b" x="20" y="30" width="140" height="60" rx="10"/>
+  <text class="ttl on-b" x="90" y="56" text-anchor="middle">① 创建机密</text>
+  <text class="mono" x="90" y="76" text-anchor="middle" style="font-size:10.5px">docker secret create</text>
+  <path class="ln-a" d="M162 60 H216" marker-end="url(#ar-a)"/>
+  <rect class="bx-p" x="220" y="30" width="200" height="60" rx="10"/>
+  <text class="ttl on-p" x="320" y="56" text-anchor="middle">② 存入加密集群存储</text>
+  <text class="sm" x="320" y="76" text-anchor="middle">静态加密（at rest）</text>
+  <rect class="bx-a" x="480" y="30" width="260" height="60" rx="10"/>
+  <text class="ttl on-a" x="610" y="56" text-anchor="middle">③ 创建服务并授权使用</text>
+  <text class="mono" x="610" y="76" text-anchor="middle" style="font-size:10.5px">docker service create --secret</text>
+  <path class="ln-a" d="M422 60 H476" marker-end="url(#ar-a)"/>
+
+  <path class="ln-a" d="M320 92 L200 150" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M320 92 L380 150" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="360" y="124">④ 通过网络传输时加密</text>
+
+  <rect class="bx" x="40" y="154" width="680" height="120" rx="12"/>
+  <rect class="bx-g" x="70" y="170" width="170" height="90" rx="10"/>
+  <text class="ttl on-g" x="155" y="194" text-anchor="middle">被授权的副本</text>
+  <text class="mono" x="155" y="218" text-anchor="middle" style="font-size:10.5px">/run/secrets/db_pw</text>
+  <text class="sm" x="155" y="240" text-anchor="middle">⑤ 内存文件系统，明文可读</text>
+  <rect class="bx-g" x="260" y="170" width="170" height="90" rx="10"/>
+  <text class="ttl on-g" x="345" y="194" text-anchor="middle">被授权的副本</text>
+  <text class="mono" x="345" y="218" text-anchor="middle" style="font-size:10.5px">/run/secrets/db_pw</text>
+  <text class="sm" x="345" y="240" text-anchor="middle">副本结束即销毁</text>
+  <rect class="bx-d" x="470" y="170" width="220" height="90" rx="10"/>
+  <text class="ttl" x="580" y="200" text-anchor="middle">其他服务的副本</text>
+  <text class="sm on-r" x="580" y="226" text-anchor="middle">✗ 看不到这个机密</text>
+  <text class="sm" x="580" y="244" text-anchor="middle">最小权限</text>
+</svg>
+<figcaption>图 16-7　Swarm 机密的工作流程</figcaption>
+</figure>
+
+<ol>
+  <li>你创建机密；</li>
+  <li>Docker 把它存进加密的集群存储；</li>
+  <li>你创建服务（或更新服务），并授权它访问这个机密；</li>
+  <li>Docker 把机密发送给服务副本时，在网络上加密传输；</li>
+  <li>Docker 把机密以<strong>未加密文件</strong>的形式挂载到副本的<strong>内存文件系统</strong>里（默认在 <code>/run/secrets/</code>），应用直接读取即可，不需要解密密钥。</li>
+</ol>
+
+<p>其他服务的副本无法访问这个机密。使用它的副本一结束，Docker 就销毁内存文件系统、把机密从节点上清除。</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ printf 'S3cr3t!' | docker secret create db_pw -       # 从标准输入创建，避免留在 shell 历史里
+$ docker secret ls
+$ docker service create --name db --secret db_pw \
+    -e POSTGRES_PASSWORD_FILE=/run/secrets/db_pw postgres:17
+</pre>
+</div>
+
+<p>很多官方镜像（postgres、mysql、mariadb……）都支持 <code>*_FILE</code> 形式的环境变量，专门用来从文件读取机密。在 Compose 文件里也可以声明机密，单机 Compose 会把本地文件以只读方式挂载进去：</p>
+
+<div class="code" data-lang="yaml" data-file="compose.yaml">
+<pre>
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_pw
+    secrets:
+      - db_pw
+secrets:
+  db_pw:
+    file: ./db_pw.txt        # 记得把它加进 .gitignore
+</pre>
+</div>
+
+<p>构建阶段需要的机密（比如私有 npm 仓库的令牌）则用第 8 章讲过的 <code>RUN --mount=type=secret</code>，它们不会留在任何镜像层里。</p>
+
+<h2 id="checklist">实用加固清单</h2>
+
+<p>原书没有单独总结，但下面这些参数和做法在生产中非常常用，建议对照检查：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker run -d --name hardened \
+    --user 1000:1000 \
+    --read-only \
+    --tmpfs /tmp \
+    --cap-drop ALL \
+    --cap-add NET_BIND_SERVICE \
+    --security-opt no-new-privileges \
+    --memory 256m --cpus 0.5 --pids-limit 100 \
+    -p 127.0.0.1:8080:8080 \
+    my-app@sha256:&lt;摘要&gt;
+</pre>
+</div>
+
+<div class="tw"><table>
+  <tr><th>参数</th><th>作用</th></tr>
+  <tr><td><code>--user 1000:1000</code></td><td>不以 root 运行</td></tr>
+  <tr><td><code>--read-only</code> + <code>--tmpfs /tmp</code></td><td>根文件系统只读，需要写的目录单独给 tmpfs</td></tr>
+  <tr><td><code>--cap-drop ALL --cap-add …</code></td><td>去掉所有 capabilities，只加回需要的</td></tr>
+  <tr><td><code>--security-opt no-new-privileges</code></td><td>禁止进程再提权（例如通过 setuid 程序）</td></tr>
+  <tr><td><code>--memory / --cpus / --pids-limit</code></td><td>资源上限，防止 DoS 和 fork 炸弹</td></tr>
+  <tr><td><code>-p 127.0.0.1:…</code></td><td>只在本机发布端口</td></tr>
+  <tr><td><code>镜像@sha256:…</code></td><td>用摘要固定镜像，确保运行的就是验证过的那一个</td></tr>
+</table></div>
+
+<div class="tw"><table>
+  <tr><th>层面</th><th>做法</th></tr>
+  <tr><td>镜像</td><td>用官方 / Hardened / distroless 等精简基础镜像；多阶段构建；定期重建以获取补丁；扫描漏洞；签名并验证</td></tr>
+  <tr><td>构建</td><td>.dockerignore；不把机密写进 ARG/ENV；用 <code>--mount=type=secret</code>；生成 SBOM 和来源证明</td></tr>
+  <tr><td>运行</td><td>非 root 用户；只读根文件系统；最小 capabilities；<code>no-new-privileges</code>；资源限制；<strong>绝不</strong>随意使用 <code>--privileged</code></td></tr>
+  <tr><td>主机</td><td>及时升级 Docker 和内核；谨慎授予 docker 组权限；考虑 rootless 模式或 <code>userns-remap</code>；<strong>不要</strong>把 <code>/var/run/docker.sock</code> 挂进不可信的容器</td></tr>
+  <tr><td>网络</td><td>自定义网络隔离不同应用；只发布必要端口；Swarm 中对敏感流量使用加密 overlay</td></tr>
+</table></div>
+
+<div class="box warn">
+  <div class="t">&#9888; 两个最常见的“后门”</div>
+  <p>
+    <code>--privileged</code> 几乎关闭了本章讲的所有防护；把 <code>/var/run/docker.sock</code> 挂进容器，等于把宿主机的 root 权限交给了这个容器。
+    两者都只应该在你完全清楚后果、并且信任容器内程序的情况下使用。
+  </p>
+</div>
+
+<h2 id="cleanup">清理</h2>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker service rm db
+$ docker secret rm db_pw
+$ unset DOCKER_CONTENT_TRUST          # 如果你以前设置过
+$ docker swarm leave -f               # 在所有节点上执行，最后处理管理节点
+</pre>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>Docker 支持所有主要的 Linux 安全技术：命名空间（隔离）、cgroups（限制）、capabilities（最小权限）、MAC（AppArmor/SELinux）、seccomp（系统调用过滤），并提供合理的默认值。</li>
+  <li>Swarm 开箱即安全：加密节点 ID、双向 TLS、自动轮换的证书、安全的加入令牌、加密的集群存储。</li>
+  <li>漏洞扫描基于 SBOM 比对已知漏洞；使用 Docker Hardened Images 等加固镜像可以从源头减少漏洞。</li>
+  <li>Docker Content Trust 已退役，应改用 Sigstore Cosign 或 Notation 签名和验证镜像，并用摘要固定镜像。</li>
+  <li>Docker 机密把敏感数据加密存储、加密传输，只以内存文件的形式提供给被授权的服务。</li>
+  <li>运行时加固：非 root、只读根文件系统、最小 capabilities、no-new-privileges、资源限制，远离 <code>--privileged</code> 和 docker.sock 挂载。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>运行 <code>docker run --rm alpine sh -c 'cat /proc/self/status | grep Cap'</code> 和加上 <code>--cap-drop ALL</code> 的版本，对比 CapEff 的值（可以用 <code>capsh --decode=</code> 解码）。</li>
+    <li>用 <code>--read-only</code> 启动一个 nginx，观察它为什么启动失败，然后用 <code>--tmpfs</code> 给它需要写的目录（<code>/var/cache/nginx</code>、<code>/var/run</code>）解决问题。</li>
+    <li>用 Trivy 或 Docker Scout 扫描 <code>python:3.13</code> 和 <code>python:3.13-slim</code>，比较漏洞数量。</li>
+    <li>安装 Cosign，给你推送到 Docker Hub 的一个镜像签名，然后验证它；再推一个新版本覆盖同一个标签，看看验证结果如何变化。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

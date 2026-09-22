@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 2 章 · Docker 与容器标准 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="2">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 2 章</span>
+<h1>Docker 与容器标准</h1>
+<p class="lede">
+  “Docker”这个词到底指什么？一家公司？一个命令？一个平台？本章先把这个名字拆清楚，
+  再认识几个塑造整个容器生态的组织和标准：OCI、CNCF 和 Moby。这些是后面所有章节的地基。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>区分“Docker 公司”和“Docker 平台”</li>
+    <li>理解 Docker 的客户端 / 服务端（引擎）架构</li>
+    <li>知道 OCI 的三个规范分别管什么，以及为什么标准如此重要</li>
+    <li>了解 CNCF 和 Moby 项目在生态中的角色</li>
+    <li>对 2026 年 Docker 的产品全家桶有个整体印象</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="two-meanings">“Docker”的两层含义</h2>
+
+<p>当人们说“Docker”时，可能指两件事：</p>
+<ol>
+  <li><strong>Docker 平台</strong>：一套打包好的技术，用来创建、管理和编排容器。你敲的 <code>docker</code> 命令就属于它。</li>
+  <li><strong>Docker 公司（Docker, Inc.）</strong>：创造了 Docker 平台、并持续推动它发展的那家公司。</li>
+</ol>
+
+<h3>Docker 公司</h3>
+<p>
+  Docker 公司总部位于美国加州帕洛阿尔托，由法裔美国开发者 Solomon Hykes 创立（他后来离开了公司）。
+</p>
+<p>
+  这家公司最早是一个叫 <strong>dotCloud</strong> 的 PaaS（平台即服务）提供商。dotCloud 在幕后用容器来交付服务，
+  并且开发了一个内部工具来部署和管理这些容器，这个工具就叫 <strong>Docker</strong>。
+  “Docker”是英式英语里 <em>dock worker</em>（码头装卸工）的简称 —— 就是在码头上把货物装上船、卸下船的人。
+  这个名字和 Docker 的鲸鱼驮着集装箱的 Logo 完美呼应：Docker 做的，就是把软件装进标准“集装箱”再运走。
+</p>
+<p>
+  2013 年，dotCloud 砍掉了经营困难的 PaaS 业务，更名为 Docker, Inc.，全力把 Docker 和容器推向世界。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 集装箱的比喻</div>
+  <p>
+    在标准集装箱出现之前，货轮装货要一件件搬，不同形状的货物各有各的装法。标准集装箱出现后，不管里面装的是香蕉还是汽车零件，
+    起重机、货轮、卡车都用同样的方式搬运它。<strong>容器之于软件，就像集装箱之于货物</strong>：
+    不管里面是 Java、Python 还是 Go 程序，Docker 都用同样的方式构建、分发和运行它。
+  </p>
+</div>
+
+<h2 id="client-engine">Docker 技术：客户端与引擎</h2>
+
+<p>Docker 平台让构建、分享和运行容器变得简单。从高处看，它由两大部分组成：</p>
+
+<ul>
+  <li><strong>CLI（客户端）</strong>：就是你熟悉的 <code>docker</code> 命令行工具。它把你输入的简单命令翻译成 <strong>API 请求</strong>，发给引擎。</li>
+  <li><strong>引擎（服务端）</strong>：所有在服务器端运行和管理容器的组件的统称，核心是一个叫 <code>dockerd</code> 的守护进程（daemon）。</li>
+</ul>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="Docker 客户端通过 API 与 Docker 引擎通信">
+  <rect class="bx-b" x="20" y="60" width="200" height="110" rx="12"/>
+  <text class="ttl on-b" x="120" y="88" text-anchor="middle">Docker 客户端</text>
+  <text class="mono" x="120" y="114" text-anchor="middle">$ docker run nginx</text>
+  <text class="sm" x="120" y="138" text-anchor="middle">把命令翻译成</text>
+  <text class="sm" x="120" y="154" text-anchor="middle">REST API 请求</text>
+
+  <path class="ln-a" d="M222 100 H400" marker-end="url(#ar-a)"/>
+  <text class="sm" x="311" y="90" text-anchor="middle">API 请求</text>
+  <path class="ln-g" d="M400 135 H222" marker-end="url(#ar-g)"/>
+  <text class="sm" x="311" y="155" text-anchor="middle">响应</text>
+
+  <rect class="bx-a" x="405" y="40" width="335" height="150" rx="12"/>
+  <text class="ttl on-a" x="572" y="66" text-anchor="middle">Docker 引擎（服务端）</text>
+  <rect class="bx" x="425" y="80" width="295" height="30" rx="6"/>
+  <text class="mono" x="572" y="100" text-anchor="middle">dockerd · 提供 Docker API</text>
+  <rect class="bx-d" x="425" y="118" width="140" height="56" rx="6"/>
+  <text class="sm" x="495" y="142" text-anchor="middle">镜像 · 构建</text>
+  <text class="sm" x="495" y="160" text-anchor="middle">网络 · 卷</text>
+  <rect class="bx-d" x="580" y="118" width="140" height="56" rx="6"/>
+  <text class="sm" x="650" y="142" text-anchor="middle">containerd</text>
+  <text class="sm" x="650" y="160" text-anchor="middle">runc · 容器</text>
+
+  <text class="lbl" x="380" y="220" text-anchor="middle">客户端和引擎可以在同一台机器上，也可以通过网络连接（比如管理一台远程服务器）</text>
+</svg>
+<figcaption>图 2-1　Docker 客户端与引擎</figcaption>
+</figure>
+
+<p>
+  在后面的章节里你会看到，客户端和引擎内部其实都由很多小而专的组件组成，非常复杂。但客户端把这些复杂性全藏起来了：
+  你只需输入友好的 <code>docker</code> 命令，CLI 把它变成 API 请求发给守护进程，剩下的事守护进程全包了。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="简单的 CLI 背后隐藏着引擎的复杂性">
+  <rect class="bx-b" x="20" y="95" width="150" height="60" rx="10"/>
+  <text class="ttl on-b" x="95" y="120" text-anchor="middle">你</text>
+  <text class="mono" x="95" y="142" text-anchor="middle">docker ...</text>
+  <path class="ln-a" d="M172 125 H225" marker-end="url(#ar-a)"/>
+  <rect class="bx-a" x="230" y="95" width="110" height="60" rx="10"/>
+  <text class="ttl on-a" x="285" y="130" text-anchor="middle">Docker API</text>
+  <path class="ln" d="M342 125 H380"/>
+  <rect class="bx-d" x="385" y="20" width="355" height="210" rx="12"/>
+  <text class="sm" x="562" y="40" text-anchor="middle">藏在引擎背后的复杂世界（你不需要关心）</text>
+  <rect class="bx" x="400" y="52"  width="100" height="34" rx="6"/><text class="sm" x="450" y="73" text-anchor="middle">BuildKit</text>
+  <rect class="bx" x="510" y="52"  width="100" height="34" rx="6"/><text class="sm" x="560" y="73" text-anchor="middle">containerd</text>
+  <rect class="bx" x="620" y="52"  width="105" height="34" rx="6"/><text class="sm" x="672" y="73" text-anchor="middle">runc</text>
+  <rect class="bx" x="400" y="96"  width="100" height="34" rx="6"/><text class="sm" x="450" y="117" text-anchor="middle">shim</text>
+  <rect class="bx" x="510" y="96"  width="100" height="34" rx="6"/><text class="sm" x="560" y="117" text-anchor="middle">libnetwork</text>
+  <rect class="bx" x="620" y="96"  width="105" height="34" rx="6"/><text class="sm" x="672" y="117" text-anchor="middle">存储驱动</text>
+  <rect class="bx" x="400" y="140" width="100" height="34" rx="6"/><text class="sm" x="450" y="161" text-anchor="middle">命名空间</text>
+  <rect class="bx" x="510" y="140" width="100" height="34" rx="6"/><text class="sm" x="560" y="161" text-anchor="middle">cgroups</text>
+  <rect class="bx" x="620" y="140" width="105" height="34" rx="6"/><text class="sm" x="672" y="161" text-anchor="middle">seccomp</text>
+  <rect class="bx" x="400" y="184" width="100" height="34" rx="6"/><text class="sm" x="450" y="205" text-anchor="middle">Swarm</text>
+  <rect class="bx" x="510" y="184" width="100" height="34" rx="6"/><text class="sm" x="560" y="205" text-anchor="middle">iptables/nft</text>
+  <rect class="bx" x="620" y="184" width="105" height="34" rx="6"/><text class="sm" x="672" y="205" text-anchor="middle">…</text>
+</svg>
+<figcaption>图 2-2　友好的 CLI 隐藏了引擎的复杂性</figcaption>
+</figure>
+
+<h2 id="standards">容器标准与组织</h2>
+
+<p>有几个重要的标准和治理组织深刻影响着容器生态，本章介绍其中三个：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="OCI、CNCF 和 Moby 的定位">
+  <rect class="bx-a" x="20" y="20" width="230" height="170" rx="12"/>
+  <text class="ttl on-a" x="135" y="48" text-anchor="middle">OCI</text>
+  <text class="sm" x="135" y="68" text-anchor="middle">Open Container Initiative</text>
+  <text class="lbl" x="135" y="100" text-anchor="middle">制定“标准”</text>
+  <text class="sm" x="135" y="126" text-anchor="middle">镜像规范 image-spec</text>
+  <text class="sm" x="135" y="144" text-anchor="middle">运行时规范 runtime-spec</text>
+  <text class="sm" x="135" y="162" text-anchor="middle">分发规范 distribution-spec</text>
+
+  <rect class="bx-b" x="265" y="20" width="230" height="170" rx="12"/>
+  <text class="ttl on-b" x="380" y="48" text-anchor="middle">CNCF</text>
+  <text class="sm" x="380" y="68" text-anchor="middle">Cloud Native Computing Foundation</text>
+  <text class="lbl" x="380" y="100" text-anchor="middle">孵化“项目”</text>
+  <text class="sm" x="380" y="126" text-anchor="middle">Kubernetes · containerd</text>
+  <text class="sm" x="380" y="144" text-anchor="middle">Prometheus · Cilium</text>
+  <text class="sm" x="380" y="162" text-anchor="middle">Notary Project · Helm …</text>
+
+  <rect class="bx-g" x="510" y="20" width="230" height="170" rx="12"/>
+  <text class="ttl on-g" x="625" y="48" text-anchor="middle">Moby</text>
+  <text class="sm" x="625" y="68" text-anchor="middle">The Moby Project</text>
+  <text class="lbl" x="625" y="100" text-anchor="middle">提供“零件”</text>
+  <text class="sm" x="625" y="126" text-anchor="middle">构建容器平台的开源组件</text>
+  <text class="sm" x="625" y="144" text-anchor="middle">Docker Engine 的开源上游</text>
+  <text class="sm" x="625" y="162" text-anchor="middle">libnetwork · BuildKit …</text>
+</svg>
+<figcaption>图 2-3　标准、项目、零件：三者各司其职</figcaption>
+</figure>
+
+<h3>OCI：开放容器倡议</h3>
+
+<p>
+  <strong>开放容器倡议（OCI）</strong>是负责制定底层容器标准的治理委员会，隶属于 Linux 基金会。
+</p>
+<p>
+  它的诞生有一段小插曲。容器生态早期，CoreOS 公司的一些人不满 Docker 一家独大，于是创建了另一套开放标准 <strong>appc</strong>，
+  定义了镜像格式和容器运行时等规范，还做了一个参考实现叫 <strong>rkt</strong>（读作 rocket）。
+  appc 和 Docker 的做法不同，整个生态一下子面临两套相互竞争的标准。
+</p>
+<p>
+  竞争通常是好事，但<strong>竞争的标准通常是坏事</strong> —— 它会制造混乱、拖慢用户采用。好在主要玩家们坐到了一起，
+  成立了中立的、轻量的 OCI 来统一治理容器标准。appc 项目随后被归档，所有底层容器规范都归入 OCI 管理。
+</p>
+
+<p>OCI 目前维护三个规范：</p>
+
+<div class="tw"><table>
+  <tr><th>规范</th><th>管什么</th><th>Docker 里谁实现了它</th></tr>
+  <tr><td><strong>image-spec</strong><br><span class="sm">镜像规范</span></td><td>镜像长什么样：由哪些层、配置和清单（manifest）组成</td><td>BuildKit 构建出的镜像符合 OCI 标准</td></tr>
+  <tr><td><strong>runtime-spec</strong><br><span class="sm">运行时规范</span></td><td>怎样把一个镜像“解包”并作为容器运行起来</td><td>Docker 使用 runc（runtime-spec 的参考实现）</td></tr>
+  <tr><td><strong>distribution-spec</strong><br><span class="sm">分发规范</span></td><td>镜像仓库（registry）的 API：怎么推送、拉取镜像</td><td>Docker Hub 是符合 OCI 标准的仓库</td></tr>
+</table></div>
+
+<div class="box key">
+  <div class="t">&#9733; 铁轨的比喻</div>
+  <p>
+    当铁轨的宽度和规格被标准化之后，造火车、造车厢、造信号系统、建站台的企业家们都有了信心：他们造出来的东西一定能在标准铁轨上用。
+    没有人想要互相竞争的轨距标准。<strong>OCI 规范对容器生态做了同样的事</strong>，此后整个生态蓬勃发展。
+    正因为有了 OCI，你用 Docker 构建的镜像可以推到任何仓库（Docker Hub、GHCR、阿里云 ACR……），也可以在任何平台（Kubernetes、Podman……）上运行。
+  </p>
+</div>
+
+<p>
+  这些底层规范演进得非常慢 —— 两个最初的规范在 2017 年 7 月发布 1.0，至今仍处于 1.x 版本。
+  <strong>稳定压倒一切</strong>，因为无数项目都依赖它们。Docker 公司是 OCI 的创始成员，至今仍有人在 OCI 技术监督委员会任职。
+</p>
+
+<div class="box deep">
+  <div class="t">&#128300; 深入：OCI 标准现在不只装镜像</div>
+  <p>
+    image-spec 1.1 引入了 <code>artifactType</code> 和 <code>subject</code> 字段，让 OCI 仓库可以存储<strong>任意制品（artifact）</strong>：
+    镜像签名、SBOM（软件物料清单）、Helm Chart、Wasm 模块，甚至第 10 章会讲到的 <strong>AI 模型</strong>。
+    “一个仓库装下一切”正在成为现实。
+  </p>
+</div>
+
+<h3>CNCF：云原生计算基金会</h3>
+
+<p>
+  <strong>云原生计算基金会（CNCF）</strong>是 Linux 基金会旗下另一个对容器生态影响深远的组织，成立于 2015 年，
+  目标是“推进容器技术……让云原生计算无处不在”。
+</p>
+<p>
+  和 OCI 不同，CNCF <strong>不制定规范，而是托管项目</strong>，比如 Kubernetes、containerd、Prometheus、Cilium 等。
+  “托管”的意思是为项目提供空间、组织结构和支持，帮助它们成长成熟。所有 CNCF 项目都要经历三个阶段：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 150" role="img" aria-label="CNCF 项目成熟度的三个阶段">
+  <rect class="bx-d" x="20" y="30" width="220" height="80" rx="10"/>
+  <text class="ttl" x="130" y="58" text-anchor="middle">沙箱 Sandbox</text>
+  <text class="sm" x="130" y="80" text-anchor="middle">好想法、好技术</text>
+  <text class="sm" x="130" y="96" text-anchor="middle">但治理和资源还不足</text>
+  <rect class="bx-b" x="270" y="30" width="220" height="80" rx="10"/>
+  <text class="ttl on-b" x="380" y="58" text-anchor="middle">孵化 Incubating</text>
+  <text class="sm" x="380" y="80" text-anchor="middle">有用户、有社区</text>
+  <text class="sm" x="380" y="96" text-anchor="middle">在补齐治理与文档</text>
+  <rect class="bx-g" x="520" y="30" width="220" height="80" rx="10"/>
+  <text class="ttl on-g" x="630" y="58" text-anchor="middle">毕业 Graduated</text>
+  <text class="sm" x="630" y="80" text-anchor="middle">生产就绪</text>
+  <text class="sm" x="630" y="96" text-anchor="middle">如 Kubernetes、containerd</text>
+  <path class="ln-a" d="M242 70 H266" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M492 70 H516" marker-end="url(#ar-a)"/>
+  <text class="lbl" x="380" y="138" text-anchor="middle">每升一级，对治理、文档、审计、社区参与度的要求就更高</text>
+</svg>
+<figcaption>图 2-4　CNCF 项目的三个成熟阶段</figcaption>
+</figure>
+
+<p>Docker 自己就用到了 CNCF 的项目，最典型的是 <strong>containerd</strong>（Docker 用它管理容器生命周期，第 5 章）。</p>
+
+<h3>Moby 项目</h3>
+
+<p>
+  Docker 创建 <strong>Moby 项目</strong>，作为一个由社区主导的地方，让开发者可以构建专门的工具来搭建容器平台。
+  平台构建者可以从 Moby 中挑选需要的工具，甚至把 Moby 工具、自研工具和其他项目的工具混搭成自己的平台。
+</p>
+<p>
+  Moby 最早由 Docker 公司发起，现在的成员还包括微软、Mirantis、NVIDIA 等。
+  你可以把 Moby 理解为 <strong>Docker Engine 的开源上游</strong>：Docker Engine 的源码就在 <code>github.com/moby/moby</code> 仓库里。
+</p>
+
+<div class="box key">
+  <div class="t">&#9733; 一句话记住三者关系</div>
+  <p><strong>Docker 平台 = OCI 的标准 + CNCF 的项目（如 containerd）+ Moby 的零件（如 libnetwork、BuildKit）+ Docker 公司自己的产品。</strong></p>
+</div>
+
+<h2 id="products">2026 年的 Docker 产品全家桶</h2>
+
+<p>原书没有专门梳理 Docker 公司的产品线，但初学者经常被一堆名字绕晕。这里列一张表，后面章节遇到时再细讲：</p>
+
+<div class="tw"><table>
+  <tr><th>产品</th><th>是什么</th><th>收费情况</th><th>本教程</th></tr>
+  <tr><td><strong>Docker Engine</strong></td><td>开源的容器引擎（dockerd + CLI），Linux 服务器上的主力</td><td>免费开源</td><td>第 3、5 章</td></tr>
+  <tr><td><strong>Docker Desktop</strong></td><td>Mac / Windows / Linux 桌面应用，内含引擎、图形界面、Compose、Kubernetes 等</td><td>个人、教育、小企业免费；大企业需订阅</td><td>第 3 章</td></tr>
+  <tr><td><strong>Docker Hub</strong></td><td>全球最大的公共镜像仓库</td><td>有免费额度</td><td>第 6 章</td></tr>
+  <tr><td><strong>Docker Compose</strong></td><td>用 YAML 定义并运行多容器应用</td><td>免费开源</td><td>第 9 章</td></tr>
+  <tr><td><strong>Buildx / BuildKit / Build Cloud</strong></td><td>构建客户端 / 构建引擎 / 云端构建服务</td><td>前两者开源；Build Cloud 订阅</td><td>第 8 章</td></tr>
+  <tr><td><strong>Docker Scout</strong></td><td>镜像漏洞扫描与供应链分析</td><td>有免费额度</td><td>第 6、16 章</td></tr>
+  <tr><td><strong>Docker Hardened Images</strong></td><td>精简加固、持续打补丁的基础镜像（2025 年 12 月起免费）</td><td>免费；合规与 SLA 需付费</td><td>第 16 章</td></tr>
+  <tr><td><strong>Docker Model Runner</strong></td><td>本地运行 AI 大模型</td><td>免费</td><td>第 10 章</td></tr>
+  <tr><td><strong>Docker Sandboxes</strong></td><td>基于 microVM 为 AI 编程助手提供隔离环境（<code>docker sbx</code>）</td><td>见官网</td><td>附录</td></tr>
+</table></div>
+
+<div class="box note">
+  <div class="t">&#9432; Docker Desktop 的许可证</div>
+  <p>
+    Docker Desktop 对个人使用、教育、非商业开源项目和小企业免费。如果你在工作中使用，且公司<strong>员工超过 250 人或年收入超过 1000 万美元</strong>，
+    就需要购买付费订阅。Linux 服务器上的 <strong>Docker Engine 本身始终免费开源</strong>，不受这个限制。
+  </p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>“Docker”既可以指 Docker 公司，也可以指 Docker 平台。公司前身是 dotCloud，2013 年更名。</li>
+  <li>Docker 平台由客户端（<code>docker</code> CLI）和引擎（服务端）组成，客户端把命令翻译成 API 请求发给引擎。</li>
+  <li><strong>OCI</strong> 维护镜像、运行时、分发三个底层规范，保证了整个生态的互通；Docker 完整实现了这三个规范。</li>
+  <li><strong>CNCF</strong> 托管 Kubernetes、containerd 等项目，并通过沙箱 → 孵化 → 毕业三阶段帮助它们成熟。</li>
+  <li><strong>Moby</strong> 是构建容器平台的开源零件库，也是 Docker Engine 的开源上游。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>访问 <a href="https://github.com/opencontainers">github.com/opencontainers</a>，找到 image-spec、runtime-spec、distribution-spec 三个仓库，看看它们的最新版本号。</li>
+    <li>访问 <a href="https://www.cncf.io/projects/">cncf.io/projects</a>，找出 containerd 和 Kubernetes 分别处于哪个成熟阶段。</li>
+    <li>思考：如果没有 OCI 分发规范，你用 Docker 推送到 GitHub Container Registry（ghcr.io）的镜像，还能用 Podman 拉下来吗？</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

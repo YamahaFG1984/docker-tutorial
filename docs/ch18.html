@@ -1,0 +1,650 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 18 章 · 用容器搭开发环境 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="18">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 18 章</span>
+<h1>用容器搭开发环境</h1>
+<p class="lede">
+  新同事入职第一天，花一整天装 Node、Postgres、Redis，还装错了版本 —— 这种场景你一定不陌生。
+  本章从零搭一个真实的开发环境：<strong>一条 <code>docker compose up</code> 拉起应用、数据库和缓存，改代码立刻生效，还能断点调试</strong>；
+  最后再用 Dev Containers 把编辑器也搬进容器。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解“开发环境容器化”解决什么问题，以及它和生产镜像的区别</li>
+    <li>用一个 Dockerfile 的不同阶段（target）分别产出开发镜像和生产镜像</li>
+    <li>用 Compose 编排应用 + Postgres + Redis，并处理好数据库初始化和启动顺序</li>
+    <li>掌握两种热更新方式：绑定挂载和 <code>docker compose watch</code>，避开 node_modules 陷阱</li>
+    <li>用 <code>compose.override.yaml</code> 区分开发与生产配置</li>
+    <li>在容器里断点调试，并用 Dev Containers 获得“开箱即用”的编辑器环境</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="why">为什么要容器化开发环境</h2>
+
+<div class="vs">
+  <div class="old"><div class="h">传统方式：每人手工装一遍</div><div style="padding:10px 14px">
+    <ul style="margin:0">
+      <li>README 里写着十几步安装说明，总有一步过时</li>
+      <li>A 电脑上 Postgres 16，B 电脑上 Postgres 14</li>
+      <li>两个项目要不同版本的 Node，来回切换</li>
+      <li>“在我电脑上是好的”</li>
+    </ul></div></div>
+  <div class="new"><div class="h">容器方式：环境即代码</div><div style="padding:10px 14px">
+    <ul style="margin:0">
+      <li><code>git clone</code> + <code>docker compose up</code>，几分钟就能开工</li>
+      <li>版本写在 Compose 文件里，所有人完全一致</li>
+      <li>每个项目各自的依赖互不干扰，电脑上什么都不用装</li>
+      <li>开发环境和生产环境用同一套镜像基础</li>
+    </ul></div></div>
+</div>
+
+<p>本章的示例项目是一个小型 Node.js API（记录待办事项），依赖 Postgres 存数据、Redis 做缓存。整体结构如下：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 340" role="img" aria-label="容器化开发环境的整体结构">
+  <rect class="bx" x="20" y="20" width="220" height="300" rx="14"/>
+  <text class="ttl" x="40" y="44">你的电脑</text>
+  <rect class="bx-b" x="40" y="60" width="180" height="60" rx="10"/>
+  <text class="ttl on-b" x="130" y="86" text-anchor="middle">编辑器 / IDE</text>
+  <text class="sm" x="130" y="106" text-anchor="middle">VS Code、JetBrains…</text>
+  <rect class="bx-d" x="40" y="136" width="180" height="96" rx="10"/>
+  <text class="ttl" x="130" y="160" text-anchor="middle">项目目录</text>
+  <text class="mono" x="130" y="182" text-anchor="middle">src/  package.json</text>
+  <text class="mono" x="130" y="200" text-anchor="middle">Dockerfile</text>
+  <text class="mono" x="130" y="218" text-anchor="middle">compose.yaml</text>
+  <rect class="bx" x="40" y="248" width="180" height="56" rx="10"/>
+  <text class="sm" x="130" y="272" text-anchor="middle">浏览器 localhost:3000</text>
+  <text class="sm" x="130" y="290" text-anchor="middle">调试器 localhost:9229</text>
+  <path class="ln" d="M130 122 V132"/>
+
+  <rect class="bx-p" x="290" y="20" width="450" height="300" rx="14"/>
+  <text class="ttl on-p" x="310" y="44">Compose 项目 todo（自定义网络 todo_default）</text>
+  <rect class="bx-a" x="310" y="60" width="200" height="110" rx="10"/>
+  <text class="ttl on-a" x="410" y="86" text-anchor="middle">api</text>
+  <text class="sm" x="410" y="108" text-anchor="middle">Node 开发服务器</text>
+  <text class="sm" x="410" y="126" text-anchor="middle">代码变化自动重启</text>
+  <text class="mono" x="410" y="150" text-anchor="middle">:3000  :9229</text>
+  <rect class="bx-g" x="530" y="60" width="190" height="80" rx="10"/>
+  <text class="ttl on-g" x="625" y="88" text-anchor="middle">db · postgres:17</text>
+  <text class="sm" x="625" y="110" text-anchor="middle">卷 pgdata 保存数据</text>
+  <text class="sm" x="625" y="126" text-anchor="middle">启动时执行初始化 SQL</text>
+  <rect class="bx-g" x="530" y="152" width="190" height="60" rx="10"/>
+  <text class="ttl on-g" x="625" y="178" text-anchor="middle">cache · redis:8</text>
+  <text class="sm" x="625" y="198" text-anchor="middle">临时缓存</text>
+  <rect class="bx-d" x="310" y="190" width="200" height="50" rx="10"/>
+  <text class="ttl" x="410" y="212" text-anchor="middle">adminer（可选）</text>
+  <text class="sm" x="410" y="230" text-anchor="middle">profiles: [tools]</text>
+  <path class="ln-a" d="M512 100 H526" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M512 150 L526 175" marker-end="url(#ar-a)"/>
+  <rect class="bx" x="310" y="256" width="410" height="50" rx="10"/>
+  <text class="sm" x="515" y="278" text-anchor="middle">api 通过服务名访问：postgres://db:5432 · redis://cache:6379</text>
+  <text class="sm" x="515" y="296" text-anchor="middle">db 和 cache 不对外发布端口（开发时按需再开）</text>
+
+  <path class="ln-a" d="M222 184 H306" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="264" y="176" text-anchor="middle">同步代码</text>
+  <path class="ln-b" d="M308 150 H262 V276 H226" marker-end="url(#ar-b)"/>
+  <text class="sm on-b" x="266" y="250">端口映射</text>
+</svg>
+<figcaption>图 18-1　本章要搭建的开发环境</figcaption>
+</figure>
+
+<h2 id="project">项目文件</h2>
+
+<div class="code" data-lang="text" data-file="目录结构">
+<pre>
+todo/
+├── src/
+│   └── index.js          # API 代码
+├── db/
+│   └── init.sql          # 数据库初始化脚本
+├── package.json
+├── package-lock.json
+├── Dockerfile            # 一个文件，开发和生产两个目标
+├── compose.yaml          # 基础配置（开发、生产通用）
+├── compose.override.yaml # 开发专用配置（自动合并）
+├── .env.example          # 环境变量模板（提交到 Git）
+├── .env                  # 真实环境变量（不提交）
+└── .dockerignore
+</pre>
+</div>
+
+<h3>一个 Dockerfile，两个目标</h3>
+
+<p>开发镜像和生产镜像的需求正好相反：开发时要<strong>所有依赖（包括 nodemon 等开发工具）和调试能力</strong>，生产时要<strong>最小、最安全</strong>。用多阶段构建（第 8 章）的 <code>target</code> 就能在一个文件里兼顾：</p>
+
+<div class="code" data-lang="dockerfile" data-file="Dockerfile">
+<pre>
+# syntax=docker/dockerfile:1
+FROM node:22-alpine AS base
+WORKDIR /app
+COPY package*.json ./
+
+# ---------- 开发目标：装全部依赖，用 nodemon 监听代码变化 ----------
+FROM base AS dev
+RUN --mount=type=cache,target=/root/.npm npm ci
+COPY . .
+EXPOSE 3000 9229
+CMD ["npx", "nodemon", "--inspect=0.0.0.0:9229", "src/index.js"]
+
+# ---------- 生产目标：只装生产依赖，非 root 运行 ----------
+FROM base AS prod
+ENV NODE_ENV=production
+RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev
+COPY src ./src
+USER node
+EXPOSE 3000
+CMD ["node", "src/index.js"]
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="同一个 Dockerfile 通过 target 产出开发镜像和生产镜像">
+  <rect class="bx-b" x="280" y="20" width="200" height="56" rx="10"/>
+  <text class="ttl on-b" x="380" y="44" text-anchor="middle">base</text>
+  <text class="sm" x="380" y="64" text-anchor="middle">node:22-alpine + package.json</text>
+  <path class="ln" d="M330 78 L190 118" marker-end="url(#ar)"/>
+  <path class="ln" d="M430 78 L570 118" marker-end="url(#ar)"/>
+  <rect class="bx-a" x="60" y="122" width="260" height="84" rx="12"/>
+  <text class="ttl on-a" x="190" y="146" text-anchor="middle">dev（--target dev）</text>
+  <text class="sm" x="190" y="168" text-anchor="middle">全部依赖 · nodemon · 调试端口</text>
+  <text class="sm" x="190" y="186" text-anchor="middle">以 root 运行，方便挂载 · 约 250MB</text>
+  <rect class="bx-g" x="440" y="122" width="260" height="84" rx="12"/>
+  <text class="ttl on-g" x="570" y="146" text-anchor="middle">prod（--target prod）</text>
+  <text class="sm" x="570" y="168" text-anchor="middle">只有生产依赖 · 非 root</text>
+  <text class="sm" x="570" y="186" text-anchor="middle">没有源码之外的杂物 · 约 150MB</text>
+</svg>
+<figcaption>图 18-2　同一份 Dockerfile，不同的构建目标</figcaption>
+</figure>
+
+<div class="code" data-lang="text" data-file=".dockerignore">
+<pre>
+node_modules
+.git
+.env
+*.log
+coverage
+</pre>
+</div>
+
+<h3>数据库初始化脚本</h3>
+
+<p>官方 Postgres、MySQL、MariaDB 镜像有一个非常实用的约定：<strong>第一次启动、数据目录为空时</strong>，会自动执行 <code>/docker-entrypoint-initdb.d/</code> 目录下的 <code>.sql</code> 和 <code>.sh</code> 文件。把建表和测试数据放进去即可：</p>
+
+<div class="code" data-lang="text" data-file="db/init.sql">
+<pre>
+CREATE TABLE todos (
+  id    SERIAL PRIMARY KEY,
+  title TEXT NOT NULL,
+  done  BOOLEAN NOT NULL DEFAULT false
+);
+INSERT INTO todos (title) VALUES ('学会 Docker'), ('用容器搭开发环境');
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 初始化脚本只执行一次</div>
+  <p>数据保存在卷里，所以第二次启动时数据目录不为空，脚本<strong>不会再执行</strong>。改了 init.sql 想重新初始化？运行 <code>docker compose down -v</code> 删掉卷再 <code>up</code>（开发数据会被清空）。</p>
+</div>
+
+<h3>环境变量</h3>
+
+<div class="vs">
+  <div class="old"><div class="h">.env.example（提交到 Git）</div>
+  <div class="code" data-lang="env"><pre>
+POSTGRES_USER=todo
+POSTGRES_PASSWORD=change-me
+POSTGRES_DB=todo
+API_PORT=3000
+</pre></div></div>
+  <div class="new"><div class="h">新同事第一步</div>
+  <div class="code" data-lang="bash"><pre>
+$ cp .env.example .env
+$ docker compose up -d
+</pre></div></div>
+</div>
+
+<h2 id="compose">Compose 文件</h2>
+
+<p>我们把配置拆成两个文件：<code>compose.yaml</code> 放开发和生产通用的部分；<code>compose.override.yaml</code> 放只在开发时需要的东西。<strong>Compose 会自动读取并合并这两个文件</strong>，不需要任何额外参数。</p>
+
+<div class="code" data-lang="yaml" data-file="compose.yaml（通用配置）">
+<pre>
+name: todo
+
+services:
+  api:
+    build:
+      context: .
+      target: prod                          # 默认构建生产目标
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://cache:6379
+    ports:
+      - "${API_PORT:-3000}:3000"
+    depends_on:
+      db:
+        condition: service_healthy           # 等数据库真正就绪
+      cache:
+        condition: service_started
+
+  db:
+    image: postgres:17
+    env_file: .env                           # POSTGRES_USER / PASSWORD / DB
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  cache:
+    image: redis:8-alpine
+
+volumes:
+  pgdata:
+</pre>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 为什么写 <code>$${POSTGRES_USER}</code>？</div>
+  <p>Compose 会在读取文件时替换 <code>${…}</code>。写成 <code>$$</code> 表示“保留一个字面上的 <code>$</code>”，让这个变量留到<strong>容器里</strong>由 shell 展开 —— 健康检查运行在 db 容器里，那里正好有这些环境变量。</p>
+</div>
+
+<div class="code" data-lang="yaml" data-file="compose.override.yaml（开发专用，自动合并）">
+<pre>
+services:
+  api:
+    build:
+      target: dev                            # 覆盖：开发时构建 dev 目标
+    environment:
+      NODE_ENV: development
+    ports:
+      - "9229:9229"                          # Node 调试端口
+    develop:
+      watch:
+        - action: sync                       # 改 src/ → 同步进容器，nodemon 自动重启
+          path: ./src
+          target: /app/src
+        - action: rebuild                    # 改依赖清单 → 重新构建镜像
+          path: package.json
+
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"                # 方便用本机的数据库客户端连接
+
+  adminer:                                   # 网页版数据库管理工具，按需启动
+    image: adminer
+    ports:
+      - "127.0.0.1:8081:8080"
+    profiles: [tools]
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="compose.yaml 与 compose.override.yaml 自动合并">
+  <rect class="bx-b" x="20" y="30" width="200" height="160" rx="12"/>
+  <text class="ttl on-b" x="120" y="56" text-anchor="middle">compose.yaml</text>
+  <text class="sm" x="120" y="80" text-anchor="middle">服务、网络、卷</text>
+  <text class="sm" x="120" y="98" text-anchor="middle">环境变量、健康检查</text>
+  <text class="mono" x="120" y="124" text-anchor="middle">target: prod</text>
+  <text class="sm" x="120" y="150" text-anchor="middle">开发、生产都用</text>
+  <rect class="bx-a" x="280" y="30" width="200" height="160" rx="12"/>
+  <text class="ttl on-a" x="380" y="56" text-anchor="middle">compose.override.yaml</text>
+  <text class="mono" x="380" y="82" text-anchor="middle">target: dev</text>
+  <text class="sm" x="380" y="104" text-anchor="middle">调试端口 · watch</text>
+  <text class="sm" x="380" y="122" text-anchor="middle">暴露数据库端口</text>
+  <text class="sm" x="380" y="140" text-anchor="middle">adminer 工具</text>
+  <text class="sm" x="380" y="166" text-anchor="middle">只在开发机上生效</text>
+  <path class="ln-a" d="M222 110 H276"/>
+  <text class="ttl on-a" x="249" y="104" text-anchor="middle">+</text>
+  <path class="ln-a" d="M482 110 H536" marker-end="url(#ar-a)"/>
+  <rect class="bx-g" x="540" y="30" width="200" height="160" rx="12"/>
+  <text class="ttl on-g" x="640" y="56" text-anchor="middle">实际生效的配置</text>
+  <text class="mono" x="640" y="84" text-anchor="middle" style="font-size:11px">docker compose up</text>
+  <text class="sm" x="640" y="108" text-anchor="middle">自动合并两个文件</text>
+  <text class="mono" x="640" y="138" text-anchor="middle" style="font-size:11px">-f compose.yaml up</text>
+  <text class="sm" x="640" y="162" text-anchor="middle">只用基础文件（接近生产）</text>
+  <text class="lbl" x="380" y="222" text-anchor="middle">合并规则：单值字段后者覆盖前者；ports 等列表字段两者合并</text>
+</svg>
+<figcaption>图 18-3　Compose 的覆盖文件机制</figcaption>
+</figure>
+
+<h3>一条命令启动</h3>
+
+<div class="code" data-lang="text">
+<pre>
+$ cp .env.example .env
+$ docker compose up -d
+[+] Running 5/5
+ ✔ Network todo_default      Created
+ ✔ Volume "todo_pgdata"      Created
+ ✔ Container todo-cache-1    Started
+ ✔ Container todo-db-1       Healthy        &lt;&lt;---- 等到健康才继续
+ ✔ Container todo-api-1      Started
+
+$ docker compose ps
+NAME           SERVICE   STATUS                    PORTS
+todo-api-1     api       Up 10 seconds             0.0.0.0:3000->3000/tcp, 0.0.0.0:9229->9229/tcp
+todo-cache-1   cache     Up 11 seconds             6379/tcp
+todo-db-1      db        Up 11 seconds (healthy)   127.0.0.1:5432->5432/tcp
+
+$ curl localhost:3000/todos
+[{"id":1,"title":"学会 Docker","done":false},{"id":2,"title":"用容器搭开发环境","done":false}]
+</pre>
+</div>
+
+<h2 id="hot-reload">热更新：改代码立刻生效</h2>
+
+<p>开发环境最重要的体验就是“保存文件 → 马上看到效果”。有两种做法：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="绑定挂载与 compose watch 两种热更新方式对比">
+  <text class="ttl" x="190" y="22" text-anchor="middle">方式 A：绑定挂载</text>
+  <rect class="bx-d" x="30" y="36" width="140" height="70" rx="10"/>
+  <text class="sm" x="100" y="64" text-anchor="middle">本机 ./src</text>
+  <text class="sm" x="100" y="84" text-anchor="middle">（唯一的一份）</text>
+  <rect class="bx-a" x="210" y="36" width="140" height="70" rx="10"/>
+  <text class="sm on-a" x="280" y="64" text-anchor="middle">容器 /app/src</text>
+  <text class="sm" x="280" y="84" text-anchor="middle">“看到”同一个目录</text>
+  <path class="ln-a" d="M172 71 H206" style="stroke-width:6;opacity:.3"/>
+  <text class="sm" x="190" y="130" text-anchor="middle">✓ 简单，任何编辑器都支持</text>
+  <text class="sm" x="190" y="150" text-anchor="middle">✗ Mac/Windows 上跨虚拟机，文件多时慢</text>
+  <text class="sm" x="190" y="170" text-anchor="middle">✗ 容器内生成的文件会“漏”回本机</text>
+
+  <line class="ln-d" x1="380" y1="20" x2="380" y2="180"/>
+
+  <text class="ttl" x="570" y="22" text-anchor="middle">方式 B：docker compose watch</text>
+  <rect class="bx-d" x="410" y="36" width="140" height="70" rx="10"/>
+  <text class="sm" x="480" y="64" text-anchor="middle">本机 ./src</text>
+  <text class="sm" x="480" y="84" text-anchor="middle">修改被监听</text>
+  <rect class="bx-a" x="590" y="36" width="140" height="70" rx="10"/>
+  <text class="sm on-a" x="660" y="64" text-anchor="middle">容器 /app/src</text>
+  <text class="sm" x="660" y="84" text-anchor="middle">容器自己的副本</text>
+  <path class="ln-a" d="M552 71 H586" marker-end="url(#ar-a)"/>
+  <text class="sm on-a" x="569" y="62" text-anchor="middle">复制</text>
+  <text class="sm" x="570" y="130" text-anchor="middle">✓ 容器内文件系统原生速度</text>
+  <text class="sm" x="570" y="150" text-anchor="middle">✓ 改依赖可自动 rebuild</text>
+  <text class="sm" x="570" y="170" text-anchor="middle">✗ 单向：容器里的改动不会回到本机</text>
+
+  <rect class="bx-g" x="30" y="200" width="700" height="72" rx="12"/>
+  <text class="ttl on-g" x="380" y="226" text-anchor="middle">watch 的三种动作</text>
+  <text class="mono" x="160" y="254" text-anchor="middle">sync</text>
+  <text class="sm" x="160" y="270" text-anchor="middle" style="font-size:10.5px">复制文件，由应用自己重载</text>
+  <text class="mono" x="380" y="254" text-anchor="middle">sync+restart</text>
+  <text class="sm" x="380" y="270" text-anchor="middle" style="font-size:10.5px">复制后重启容器（改配置文件）</text>
+  <text class="mono" x="600" y="254" text-anchor="middle">rebuild</text>
+  <text class="sm" x="600" y="270" text-anchor="middle" style="font-size:10.5px">重新构建镜像并替换容器</text>
+</svg>
+<figcaption>图 18-4　两种热更新方式</figcaption>
+</figure>
+
+<p>本章的 override 文件用的是 watch。启动方式：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker compose up --watch          # 前台运行，同时显示日志和同步事件
+# 或者在另一个终端：
+$ docker compose watch
+</pre>
+</div>
+
+<p>修改 <code>src/index.js</code> 并保存，Compose 把文件同步进容器，nodemon 检测到变化后自动重启 Node 进程。修改 <code>package.json</code> 则会触发整个镜像重新构建。</p>
+
+<h3>如果用绑定挂载：小心 node_modules 陷阱</h3>
+
+<p>很多教程直接把整个项目目录挂进去：<code>- .:/app</code>。这会带来一个经典问题：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="绑定挂载覆盖了镜像中的 node_modules">
+  <rect class="bx-a" x="20" y="30" width="330" height="170" rx="12"/>
+  <text class="ttl on-a" x="185" y="54" text-anchor="middle">容器里的 /app</text>
+  <rect class="bx" x="40" y="70" width="290" height="36" rx="6"/>
+  <text class="sm" x="185" y="93" text-anchor="middle">镜像里 npm ci 装好的 node_modules（Linux 版）</text>
+  <rect class="bx-r" x="40" y="114" width="290" height="70" rx="8"/>
+  <text class="sm on-r" x="185" y="138" text-anchor="middle">被绑定挂载的本机目录整个盖住！</text>
+  <text class="sm" x="185" y="158" text-anchor="middle">本机没有 node_modules → 模块找不到</text>
+  <text class="sm" x="185" y="174" text-anchor="middle">本机有，但是 macOS 编译的 → 原生模块崩溃</text>
+
+  <path class="ln-a" d="M362 115 H408" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-g" x="410" y="30" width="330" height="170" rx="12"/>
+  <text class="ttl on-g" x="575" y="54" text-anchor="middle">解决：给 node_modules 单独一个卷</text>
+  <text class="mono" x="430" y="84" style="font-size:11px">volumes:</text>
+  <text class="mono" x="430" y="104" style="font-size:11px">  - .:/app</text>
+  <text class="mono" x="430" y="124" style="font-size:11px">  - node_modules:/app/node_modules</text>
+  <text class="sm" x="575" y="156" text-anchor="middle">更具体的挂载点优先，</text>
+  <text class="sm" x="575" y="174" text-anchor="middle">容器里的依赖不会被本机目录覆盖</text>
+  <text class="lbl" x="380" y="232" text-anchor="middle">Python 的 .venv、Ruby 的 vendor/bundle 等也是同样的道理</text>
+</svg>
+<figcaption>图 18-5　node_modules 陷阱与解决办法</figcaption>
+</figure>
+
+<div class="code" data-lang="yaml" data-file="compose.override.yaml（绑定挂载版）">
+<pre>
+services:
+  api:
+    build:
+      target: dev
+    volumes:
+      - .:/app                               # 本机项目目录 → 容器
+      - node_modules:/app/node_modules       # 依赖留在容器里的命名卷中
+volumes:
+  node_modules:
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 文件变化检测不到？</div>
+  <p>在 Windows（WSL 之外的目录）或某些网络文件系统上，绑定挂载的文件变化事件可能传不进容器，nodemon、Vite 等察觉不到修改。
+    解决办法：把项目放在 WSL 2 的 Linux 文件系统里；改用 <code>compose watch</code>；或者让工具使用轮询（如 <code>nodemon --legacy-watch</code>、<code>CHOKIDAR_USEPOLLING=true</code>）。</p>
+</div>
+
+<h2 id="daily">日常开发操作</h2>
+
+<div class="tw"><table class="cheat">
+  <tr><th>我想……</th><th>命令</th></tr>
+  <tr><td>看 API 的日志</td><td><code>docker compose logs -f api</code></td></tr>
+  <tr><td>进入 API 容器执行命令</td><td><code>docker compose exec api sh</code></td></tr>
+  <tr><td>安装一个新依赖</td><td><code>docker compose exec api npm install dayjs</code>（watch 会因 package.json 变化触发 rebuild）</td></tr>
+  <tr><td>跑一次性任务（测试、迁移）</td><td><code>docker compose run --rm api npm test</code></td></tr>
+  <tr><td>连上数据库</td><td><code>docker compose exec db psql -U todo</code>，或用本机客户端连 <code>127.0.0.1:5432</code></td></tr>
+  <tr><td>打开数据库管理界面</td><td><code>docker compose --profile tools up -d</code>，访问 <code>localhost:8081</code></td></tr>
+  <tr><td>重置数据库</td><td><code>docker compose down -v &amp;&amp; docker compose up -d</code></td></tr>
+  <tr><td>验证生产镜像能跑</td><td><code>docker compose -f compose.yaml up --build</code>（跳过 override）</td></tr>
+  <tr><td>下班关掉一切</td><td><code>docker compose down</code>（数据保留在卷里）</td></tr>
+</table></div>
+
+<div class="box note">
+  <div class="t">&#9432; exec 和 run 的区别</div>
+  <p><code>exec</code> 在<strong>已经运行</strong>的容器里执行命令；<code>run</code> 基于服务配置<strong>新建</strong>一个临时容器执行命令，加 <code>--rm</code> 用完即删。跑测试、数据库迁移这类一次性任务用 <code>run --rm</code>，不会影响正在运行的开发服务器。</p>
+</div>
+
+<h2 id="debug">在容器里断点调试</h2>
+
+<p>
+  dev 目标用 <code>--inspect=0.0.0.0:9229</code> 启动了 Node 调试器，override 文件又把 9229 端口映射到了本机。
+  注意这里同样要监听 <code>0.0.0.0</code>，原因见第 17 章图 17-4。在 VS Code 里添加一个“附加”配置：
+</p>
+
+<div class="code" data-lang="json" data-file=".vscode/launch.json">
+<pre>
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "附加到容器中的 Node",
+      "type": "node",
+      "request": "attach",
+      "address": "localhost",
+      "port": 9229,
+      "localRoot": "${workspaceFolder}",
+      "remoteRoot": "/app",
+      "restart": true
+    }
+  ]
+}
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="IDE 通过映射的 9229 端口附加到容器中的 Node 调试器">
+  <rect class="bx-b" x="20" y="40" width="200" height="90" rx="12"/>
+  <text class="ttl on-b" x="120" y="68" text-anchor="middle">VS Code</text>
+  <text class="sm" x="120" y="90" text-anchor="middle">在本机代码上打断点</text>
+  <text class="mono" x="120" y="112" text-anchor="middle" style="font-size:10.5px">localRoot=${workspaceFolder}</text>
+  <path class="ln-a" d="M222 85 H356" marker-end="url(#ar-a)"/>
+  <text class="mono" x="289" y="76" text-anchor="middle">localhost:9229</text>
+  <rect class="bx-p" x="360" y="55" width="100" height="60" rx="10"/>
+  <text class="sm on-p" x="410" y="82" text-anchor="middle">端口映射</text>
+  <text class="mono" x="410" y="100" text-anchor="middle">9229:9229</text>
+  <path class="ln-a" d="M462 85 H536" marker-end="url(#ar-a)"/>
+  <rect class="bx-a" x="540" y="40" width="200" height="90" rx="12"/>
+  <text class="ttl on-a" x="640" y="68" text-anchor="middle">api 容器</text>
+  <text class="mono" x="640" y="90" text-anchor="middle" style="font-size:10.5px">--inspect=0.0.0.0:9229</text>
+  <text class="mono" x="640" y="112" text-anchor="middle" style="font-size:10.5px">remoteRoot=/app</text>
+  <text class="lbl" x="380" y="158" text-anchor="middle">localRoot / remoteRoot 告诉调试器：本机的哪个目录对应容器里的哪个目录</text>
+</svg>
+<figcaption>图 18-6　从 IDE 附加到容器里的调试器</figcaption>
+</figure>
+
+<p>按 F5 启动这个配置，就能在本机的源码上打断点、单步执行，而程序实际运行在容器里。Python（debugpy，端口 5678）、Java（JDWP，端口 5005）、Go（Delve，端口 2345）都是同样的思路：容器里开调试端口，映射出来，IDE 附加上去。</p>
+
+<h2 id="devcontainers">Dev Containers：把编辑器也搬进容器</h2>
+
+<p>
+  到目前为止，运行时在容器里，但你的编辑器、语言服务器、代码检查工具、Git 钩子还装在本机。
+  <strong>Dev Containers</strong> 更进一步：<strong>整个开发环境都在容器里</strong>，编辑器只是一个“远程窗口”。
+  它由一个开放规范（<a href="https://containers.dev">containers.dev</a>）定义，VS Code、JetBrains、GitHub Codespaces 等都支持。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="Dev Containers 架构：编辑器界面在本机，其余一切在容器里">
+  <rect class="bx" x="20" y="30" width="200" height="200" rx="14"/>
+  <text class="ttl" x="120" y="56" text-anchor="middle">本机</text>
+  <rect class="bx-b" x="40" y="80" width="160" height="80" rx="10"/>
+  <text class="ttl on-b" x="120" y="110" text-anchor="middle">编辑器界面</text>
+  <text class="sm" x="120" y="132" text-anchor="middle">只负责显示和输入</text>
+  <text class="sm" x="120" y="200" text-anchor="middle">本机只需要 Docker</text>
+  <text class="sm" x="120" y="218" text-anchor="middle">和编辑器</text>
+  <path class="ln-a" d="M202 120 H286" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M286 140 H202" marker-end="url(#ar-a)"/>
+  <rect class="bx-p" x="290" y="30" width="450" height="200" rx="14"/>
+  <text class="ttl on-p" x="310" y="56">开发容器（由 devcontainer.json 定义）</text>
+  <rect class="bx-a" x="310" y="72" width="200" height="140" rx="10"/>
+  <text class="ttl on-a" x="410" y="96" text-anchor="middle">api 服务</text>
+  <text class="sm" x="410" y="120" text-anchor="middle">Node 运行时</text>
+  <text class="sm" x="410" y="138" text-anchor="middle">编辑器后端 · 语言服务器</text>
+  <text class="sm" x="410" y="156" text-anchor="middle">ESLint · 调试器 · 终端</text>
+  <text class="sm" x="410" y="174" text-anchor="middle">Git · 各种 CLI（features）</text>
+  <text class="sm" x="410" y="192" text-anchor="middle">项目代码挂载在 /workspace</text>
+  <rect class="bx-g" x="530" y="72" width="190" height="64" rx="10"/>
+  <text class="ttl on-g" x="625" y="100" text-anchor="middle">db</text>
+  <text class="sm" x="625" y="120" text-anchor="middle">Compose 一起启动</text>
+  <rect class="bx-g" x="530" y="148" width="190" height="64" rx="10"/>
+  <text class="ttl on-g" x="625" y="176" text-anchor="middle">cache</text>
+  <text class="sm" x="625" y="196" text-anchor="middle">Compose 一起启动</text>
+  <text class="lbl" x="380" y="258" text-anchor="middle">同一个配置文件，在本机、在 GitHub Codespaces 云端，体验完全一样</text>
+</svg>
+<figcaption>图 18-7　Dev Containers：编辑器前端在本机，其余一切在容器里</figcaption>
+</figure>
+
+<p>在项目里新建 <code>.devcontainer/devcontainer.json</code>，直接复用前面的 Compose 文件：</p>
+
+<div class="code" data-lang="json" data-file=".devcontainer/devcontainer.json">
+<pre>
+{
+  "name": "todo",
+  "dockerComposeFile": ["../compose.yaml", "../compose.override.yaml", "compose.devcontainer.yaml"],
+  "service": "api",
+  "workspaceFolder": "/workspace",
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "forwardPorts": [3000, 8081],
+  "postCreateCommand": "npm ci",
+  "customizations": {
+    "vscode": {
+      "extensions": ["dbaeumer.vscode-eslint", "ms-azuretools.vscode-containers"]
+    }
+  }
+}
+</pre>
+</div>
+
+<div class="code" data-lang="yaml" data-file=".devcontainer/compose.devcontainer.yaml">
+<pre>
+services:
+  api:
+    volumes:
+      - ..:/workspace:cached          # 把项目挂进容器，编辑器直接在里面改
+    command: sleep infinity           # 让容器保持运行，由你在终端里启动应用
+</pre>
+</div>
+
+<p>然后在 VS Code 里执行命令 <strong>Dev Containers: Reopen in Container</strong>（需要安装 Dev Containers 扩展）。第一次会构建容器、安装扩展、执行 <code>postCreateCommand</code>，之后编辑器左下角会显示你已经“在容器里”了：打开的终端是容器里的 shell，扩展运行在容器里，<code>npm</code> 和 <code>node</code> 也来自容器。</p>
+
+<div class="tw"><table>
+  <tr><th></th><th>只用 Compose（本章前半部分）</th><th>Dev Containers</th></tr>
+  <tr><td>运行时、数据库</td><td>容器里</td><td>容器里</td></tr>
+  <tr><td>编辑器扩展、语言服务器、代码检查</td><td>本机</td><td>容器里</td></tr>
+  <tr><td>本机需要装什么</td><td>Docker（加上你喜欢的编辑器插件依赖）</td><td>只要 Docker + 编辑器</td></tr>
+  <tr><td>团队一致性</td><td>运行时一致</td><td>连工具链、扩展、格式化配置都一致</td></tr>
+  <tr><td>适合</td><td>大多数项目，简单直接</td><td>工具链复杂的项目、开源项目、云端开发（Codespaces）</td></tr>
+</table></div>
+
+<h2 id="tips">更多建议</h2>
+
+<ul>
+  <li><strong>固定版本：</strong><code>postgres:17</code>、<code>redis:8-alpine</code>，不要用 <code>latest</code>，让所有人和生产环境保持一致。</li>
+  <li><strong>数据库端口只绑定到 127.0.0.1：</strong>避免开发数据库暴露在咖啡馆的 Wi-Fi 上。</li>
+  <li><strong>把常用命令写进 Makefile 或 package.json 的 scripts</strong>，比如 <code>make dev</code>、<code>make reset-db</code>，新人更容易上手。</li>
+  <li><strong>Mac / Windows 性能：</strong>依赖目录放在命名卷里；优先 <code>compose watch</code>；Docker Desktop 设置里给足 CPU 和内存。</li>
+  <li><strong>定期验证生产镜像：</strong>开发时一直用 dev 目标，偶尔用 <code>docker compose -f compose.yaml up --build</code> 跑一下 prod 目标，别等到上线才发现问题。第 19 章会让 CI 自动做这件事。</li>
+</ul>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>容器化开发环境让“克隆仓库 + 一条命令”就能开工，所有人的依赖版本完全一致。</li>
+  <li>用多阶段构建的 <code>target</code>，一个 Dockerfile 同时产出开发镜像和生产镜像。</li>
+  <li>官方数据库镜像会在首次启动时执行 <code>/docker-entrypoint-initdb.d/</code> 下的脚本；配合 healthcheck 解决启动顺序。</li>
+  <li><code>compose.override.yaml</code> 会被自动合并，适合放开发专用配置。</li>
+  <li>热更新有两种方式：绑定挂载（注意 node_modules 陷阱）和 <code>docker compose watch</code>（同步、重启、重建）。</li>
+  <li>容器里开调试端口并监听 0.0.0.0，映射出来后 IDE 就能附加调试。</li>
+  <li>Dev Containers 把整个工具链都放进容器，并且能无缝迁移到 GitHub Codespaces。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>按本章内容搭建 todo 项目（<code>src/index.js</code> 可以自己用 Express + <code>pg</code> 写一个 <code>GET /todos</code>），确认 <code>curl localhost:3000/todos</code> 能返回初始化数据。</li>
+    <li>启动 <code>docker compose up --watch</code>，修改接口返回内容，观察日志里的同步事件和 nodemon 重启。</li>
+    <li>改用绑定挂载 <code>- .:/app</code> 但<strong>不加</strong> node_modules 卷，重现“模块找不到”的错误；再加上卷解决它。</li>
+    <li>在 VS Code 里配置 launch.json，在路由处理函数里打一个断点并命中它。</li>
+    <li>给项目加上 <code>.devcontainer</code>，用 “Reopen in Container” 打开，确认终端里的 <code>node --version</code> 来自容器。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

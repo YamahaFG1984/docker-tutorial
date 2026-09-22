@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Docker 从零到精通 · 面向初学者的图解教程</title>
+<meta name="description" content="改编自《Docker Deep Dive》（2025 年 5 月版），同步到 2026 年 9 月的 Docker 最新版本。20 章图解教程，从容器原理到 Compose、网络、安全与本地大模型。">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="0">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<div class="hero">
+  <span class="chapter-eyebrow">面向初学者的 20 章图解教程</span>
+  <h1>Docker 从零到精通</h1>
+  <p class="sub">
+    这套教程改编自 Nigel Poulton 的《Docker Deep Dive: Zero to Docker in a Single Book》（2025 年 5 月版）。
+    原书的知识骨架被完整保留 —— 容器原理、引擎架构、镜像、容器、Dockerfile、Compose、Swarm、网络、卷、安全 ——
+    但每一章都重新组织成“先讲为什么，再画图，再动手”的节奏，并且<strong>全部同步到了 2026 年 9 月的 Docker 最新版本</strong>。
+  </p>
+  <p style="margin-top:14px">
+    <span class="pill">Docker Engine 29</span><span class="pill">Docker Desktop 4.92</span><span class="pill">Compose v5</span>
+    <span class="pill">BuildKit / Buildx</span><span class="pill">containerd 2</span><span class="pill">Docker Model Runner</span>
+    <span class="pill">OCI 标准</span><span class="pill">Swarm</span><span class="pill">Sigstore 签名</span>
+  </p>
+</div>
+
+<h2 id="why">为什么要学 Docker？</h2>
+
+<p>
+  你一定听过这句话：“<em>在我电脑上明明是好的啊！</em>”
+  开发者的笔记本上装的是 Node 22，测试服务器上是 Node 18；本地用的是 macOS，线上跑的是 Ubuntu；
+  某个依赖库在一台机器上有、另一台机器上没有……这些差异让“把程序从一台机器搬到另一台机器”变成了一件痛苦的事。
+</p>
+<p>
+  Docker 的解决办法非常朴素：<strong>把程序连同它需要的一切（运行时、库、配置、文件）打成一个包</strong>，这个包叫<strong>镜像</strong>。
+  镜像在任何装了 Docker 的机器上运行起来都一模一样，运行起来的那个东西叫<strong>容器</strong>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 260" role="img" aria-label="Docker 的核心工作流：构建镜像、推送到仓库、在任意机器上运行">
+  <rect class="bx-b" x="20" y="70" width="170" height="110" rx="12"/>
+  <text class="ttl on-b" x="105" y="98" text-anchor="middle">① 构建 Build</text>
+  <text class="lbl" x="105" y="122" text-anchor="middle">源代码 + Dockerfile</text>
+  <text class="mono" x="105" y="148" text-anchor="middle">docker build</text>
+  <text class="sm" x="105" y="168" text-anchor="middle">产出：镜像</text>
+
+  <rect class="bx-a" x="295" y="70" width="170" height="110" rx="12"/>
+  <text class="ttl on-a" x="380" y="98" text-anchor="middle">② 分享 Share</text>
+  <text class="lbl" x="380" y="122" text-anchor="middle">镜像仓库 Registry</text>
+  <text class="mono" x="380" y="148" text-anchor="middle">docker push</text>
+  <text class="sm" x="380" y="168" text-anchor="middle">Docker Hub / GHCR …</text>
+
+  <rect class="bx-g" x="570" y="70" width="170" height="110" rx="12"/>
+  <text class="ttl on-g" x="655" y="98" text-anchor="middle">③ 运行 Run</text>
+  <text class="lbl" x="655" y="122" text-anchor="middle">任何装了 Docker 的机器</text>
+  <text class="mono" x="655" y="148" text-anchor="middle">docker run</text>
+  <text class="sm" x="655" y="168" text-anchor="middle">产出：容器</text>
+
+  <path class="ln-a" d="M192 125 H290" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M467 125 H565" marker-end="url(#ar-a)"/>
+
+  <text class="sm" x="380" y="30" text-anchor="middle">Docker 官方口号：Build · Share · Run</text>
+  <rect class="bx-d" x="570" y="200" width="52" height="34" rx="6"/><text class="sm" x="596" y="221" text-anchor="middle">笔记本</text>
+  <rect class="bx-d" x="630" y="200" width="52" height="34" rx="6"/><text class="sm" x="656" y="221" text-anchor="middle">服务器</text>
+  <rect class="bx-d" x="690" y="200" width="50" height="34" rx="6"/><text class="sm" x="715" y="221" text-anchor="middle">云</text>
+  <path class="ln-d" d="M655 182 V196"/>
+</svg>
+<figcaption>图 0-1　整本教程都围绕这三步展开：构建、分享、运行</figcaption>
+</figure>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#128230;</span><h4>一次打包，到处运行</h4><p>镜像里带着程序需要的一切，不再有“环境不一致”。</p></div>
+  <div class="card"><span class="ic">&#9889;</span><h4>秒级启动</h4><p>容器共享宿主机内核，不用像虚拟机那样启动整个操作系统。</p></div>
+  <div class="card"><span class="ic">&#129521;</span><h4>积木式组合</h4><p>数据库、缓存、后端、前端各跑一个容器，用 Compose 一键拉起。</p></div>
+  <div class="card"><span class="ic">&#127758;</span><h4>行业标准</h4><p>Docker 镜像遵循 OCI 标准，Kubernetes 等平台都能直接运行。</p></div>
+</div>
+
+<h2 id="version">本教程基于的版本</h2>
+
+<p>原书写于 2025 年 5 月（Docker Engine 28.1、Docker Desktop 4.42）。在那之后 Docker 发生了不少变化，本教程已经全部同步到下面这些版本：</p>
+
+<div class="ver">
+  <div><b>29.8</b><span>Docker Engine（2026-09）</span></div>
+  <div><b>4.92</b><span>Docker Desktop（2026-09）</span></div>
+  <div><b>v5.5</b><span>Docker Compose</span></div>
+  <div><b>2.3</b><span>containerd</span></div>
+</div>
+
+<p>凡是原书之后发生变化的地方，文中都会用这样的紫色提示框标出来：</p>
+
+<div class="box new">
+  <div class="t">&#10024; 最新变化</div>
+  <p>例如：Docker Engine 29 起，全新安装默认使用 <strong>containerd 镜像存储</strong>；
+  <strong>Docker Content Trust</strong> 已从 CLI 移除，Notary v1 服务将于 2026 年 12 月 8 日关闭；
+  Compose 用顶层 <code>models:</code> 声明 AI 模型；Docker Desktop 的 Wasm 功能已被标记为弃用……</p>
+</div>
+
+<h2 id="who">这套教程写给谁</h2>
+
+<ul>
+  <li><strong>完全没接触过容器</strong>的人。第 1–4 章从“为什么需要容器”讲起，第 4 章就能跑起第一个容器。</li>
+  <li><strong>会用几条 docker 命令，但说不清原理</strong>的人。第 5–8 章会拆开引擎、镜像分层、容器读写层和构建缓存。</li>
+  <li><strong>需要把项目容器化并上线</strong>的开发者。Dockerfile 最佳实践、多阶段构建、Compose、网络、卷、安全都有专章。</li>
+  <li><strong>想在本地跑大模型</strong>的人。第 10 章用 Docker Model Runner 拉模型、调 API、接入 Compose。</li>
+  <li><strong>要在团队里真正用起来</strong>的人。第 17–19 章讲排错、用容器搭开发环境、用 GitHub Actions 搭镜像流水线。</li>
+</ul>
+
+<div class="box note">
+  <div class="t">&#9432; 需要什么前置知识</div>
+  <p>
+    会在终端里敲命令（<code>cd</code>、<code>ls</code>）就够了。不需要会 Linux 运维，不需要会任何特定编程语言 ——
+    示例里出现的 Node.js、Python、Go 代码都很短，我们只关心“怎么把它装进容器”，不关心代码本身。
+  </p>
+</div>
+
+<h2 id="map">知识地图</h2>
+
+<p>下面这张图是整套教程的结构。越往下越接近底层原理，越往上越接近日常使用：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 360" role="img" aria-label="教程知识地图">
+  <rect class="bx-p" x="20" y="20" width="720" height="60" rx="10"/>
+  <text class="ttl on-p" x="36" y="44">应用层 · 你每天打交道的东西</text>
+  <text class="sm" x="36" y="66">第 8 章 Dockerfile ・ 第 9 章 Compose ・ 第 10 章 AI 模型 ・ 第 11 章 Wasm ・ 第 17–19 章 实战</text>
+
+  <rect class="bx-g" x="20" y="96" width="350" height="76" rx="10"/>
+  <text class="ttl on-g" x="36" y="120">核心对象</text>
+  <text class="sm" x="36" y="142">第 6 章 镜像（只读模板）</text>
+  <text class="sm" x="36" y="160">第 7 章 容器（运行中的实例）</text>
+
+  <rect class="bx-g" x="390" y="96" width="350" height="76" rx="10"/>
+  <text class="ttl on-g" x="406" y="120">基础设施</text>
+  <text class="sm" x="406" y="142">第 13–14 章 网络（容器之间怎么通信）</text>
+  <text class="sm" x="406" y="160">第 15 章 卷（数据放哪里才不会丢）</text>
+
+  <rect class="bx-b" x="20" y="188" width="350" height="76" rx="10"/>
+  <text class="ttl on-b" x="36" y="212">引擎</text>
+  <text class="sm" x="36" y="234">第 5 章 dockerd → containerd → shim → runc</text>
+  <text class="sm" x="36" y="252">第 12 章 Swarm：把多台机器变成一个集群</text>
+
+  <rect class="bx-b" x="390" y="188" width="350" height="76" rx="10"/>
+  <text class="ttl on-b" x="406" y="212">安全</text>
+  <text class="sm" x="406" y="234">第 16 章 命名空间 · cgroups · capabilities</text>
+  <text class="sm" x="406" y="252">seccomp · 镜像扫描 · 签名 · 机密</text>
+
+  <rect class="bx-a" x="20" y="280" width="720" height="60" rx="10"/>
+  <text class="ttl on-a" x="36" y="304">背景与标准</text>
+  <text class="sm" x="36" y="326">第 1 章 为什么有容器 ・ 第 2 章 OCI / CNCF / Moby ・ 第 3 章 安装 ・ 第 4 章 第一次上手</text>
+</svg>
+<figcaption>图 0-2　从上到下：从“怎么用”到“为什么能这样用”</figcaption>
+</figure>
+
+<h2 id="how">怎么用这套教程</h2>
+
+<ul>
+  <li><strong>按顺序读。</strong>第 1–9 章是主线，建议顺序阅读；第 10–16 章相对独立，可以按需跳读；第 17–19 章是实战篇（排错、开发环境、CI/CD），学完主线后随时回来查。</li>
+  <li><strong>亲手敲命令。</strong>每章都有可以直接复制的命令（点代码块右上角的“复制”，会自动去掉 <code>$</code> 提示符），
+    每章末尾还有「动手练习」。</li>
+  <li><strong>看图。</strong>Docker 的很多概念（分层、网络、卷）用文字解释很抽象，画出来一眼就懂。每张图都值得停下来多看几秒。</li>
+  <li><strong>留意提示框的颜色：</strong>
+    <span class="pill" style="border-color:var(--blue);color:var(--blue)">蓝色 · 说明</span>
+    <span class="pill" style="border-color:var(--green);color:var(--green)">绿色 · 技巧</span>
+    <span class="pill" style="border-color:var(--red);color:var(--red)">红色 · 警告</span>
+    <span class="pill" style="border-color:var(--accent);color:var(--accent-2)">橙色 · 重点</span>
+    <span class="pill" style="border-color:var(--purple);color:var(--purple)">紫色 · 深入 / 最新变化</span>
+  </li>
+</ul>
+
+<div class="box tip">
+  <div class="t">&#128161; 示例代码从哪里来</div>
+  <p>
+    原书的示例应用都在作者的 GitHub 仓库里：<a href="https://github.com/nigelpoulton/ddd-book">github.com/nigelpoulton/ddd-book</a>。
+    开始动手前先把它克隆下来：<code>git clone https://github.com/nigelpoulton/ddd-book.git</code>。
+    本教程在原书示例的基础上做了修正和现代化（比如 Dockerfile 最佳实践、Compose 新语法），文中会说明差异。
+  </p>
+</div>
+
+<h2 id="toc">全部章节</h2>
+<div id="toc-grid"></div>
+
+<div class="box key" style="margin-top:32px">
+  <div class="t">&#9733; 一句话总结</div>
+  <p>
+    如果你只记住一件事：<strong>镜像是只读的“模板”，容器是从模板启动的“实例”；
+    容器本质上是一个被 Linux 内核隔离和限制起来的普通进程。</strong>
+    这套教程剩下的内容，都是在解释这句话的各种展开。
+  </p>
+</div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

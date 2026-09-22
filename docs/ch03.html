@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 3 章 · 安装 Docker — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="3">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 3 章</span>
+<h1>安装 Docker</h1>
+<p class="lede">
+  获取 Docker 的方式有很多。本章介绍三种：<strong>Docker Desktop</strong>（强烈推荐，桌面电脑首选）、
+  <strong>Linux 服务器安装</strong>（生产环境的标准做法）和 <strong>Multipass 虚拟机</strong>（想要多节点实验环境时用）。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>根据自己的电脑选择合适的安装方式</li>
+    <li>在 Windows / Mac 上装好 Docker Desktop，并理解它背后的 Linux 虚拟机</li>
+    <li>用官方软件源在 Ubuntu 上安装 Docker Engine</li>
+    <li>学会用 <code>docker version</code> 和 <code>docker info</code> 验证安装</li>
+    <li>知道 <code>docker</code> 用户组的安全含义，以及 rootless 模式</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="choose">先选一种安装方式</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="选择 Docker 安装方式的决策图">
+  <rect class="bx-a" x="280" y="16" width="200" height="44" rx="10"/>
+  <text class="ttl on-a" x="380" y="43" text-anchor="middle">你用什么电脑？</text>
+
+  <path class="ln" d="M330 62 L130 100" marker-end="url(#ar)"/>
+  <path class="ln" d="M380 62 V100" marker-end="url(#ar)"/>
+  <path class="ln" d="M430 62 L630 100" marker-end="url(#ar)"/>
+
+  <rect class="bx" x="40" y="104" width="180" height="40" rx="8"/>
+  <text class="lbl" x="130" y="129" text-anchor="middle">Windows / Mac 笔记本</text>
+  <rect class="bx" x="290" y="104" width="180" height="40" rx="8"/>
+  <text class="lbl" x="380" y="129" text-anchor="middle">Linux 桌面</text>
+  <rect class="bx" x="540" y="104" width="180" height="40" rx="8"/>
+  <text class="lbl" x="630" y="129" text-anchor="middle">Linux 服务器 / 云主机</text>
+
+  <path class="ln" d="M130 146 V180" marker-end="url(#ar)"/>
+  <path class="ln" d="M380 146 V180" marker-end="url(#ar)"/>
+  <path class="ln" d="M630 146 V180" marker-end="url(#ar)"/>
+
+  <rect class="bx-g" x="40" y="184" width="180" height="76" rx="10"/>
+  <text class="ttl on-g" x="130" y="210" text-anchor="middle">Docker Desktop</text>
+  <text class="sm" x="130" y="232" text-anchor="middle">功能最全、最省心</text>
+  <text class="sm" x="130" y="248" text-anchor="middle">本教程默认环境</text>
+  <rect class="bx-g" x="290" y="184" width="180" height="76" rx="10"/>
+  <text class="ttl on-g" x="380" y="210" text-anchor="middle">二选一</text>
+  <text class="sm" x="380" y="232" text-anchor="middle">Docker Desktop for Linux</text>
+  <text class="sm" x="380" y="248" text-anchor="middle">或 Docker Engine</text>
+  <rect class="bx-b" x="540" y="184" width="180" height="76" rx="10"/>
+  <text class="ttl on-b" x="630" y="210" text-anchor="middle">Docker Engine</text>
+  <text class="sm" x="630" y="232" text-anchor="middle">官方 apt / dnf 软件源</text>
+  <text class="sm" x="630" y="248" text-anchor="middle">开源、免费、无界面</text>
+
+  <text class="lbl" x="380" y="284" text-anchor="middle">需要多台机器做集群实验（第 12、14 章）？再加上 Multipass 或 Play with Docker</text>
+</svg>
+<figcaption>图 3-1　选择适合你的安装方式</figcaption>
+</figure>
+
+<p>
+  作者强烈推荐 Docker Desktop，本教程的大部分示例也都可以用它完成。
+  但 Docker Desktop 只提供单个 Docker 节点，所以 Swarm 和 overlay 网络章节需要多台机器，届时再用 Multipass 或 Linux 服务器。
+</p>
+
+<h2 id="desktop">Docker Desktop</h2>
+
+<p>
+  Docker Desktop 是 Docker 公司出品的桌面应用，是使用容器最方便的方式。一次安装你就能得到：
+  Docker Engine、漂亮的图形界面、最新的 CLI 插件（Buildx、Compose、Scout、Debug、Model Runner……）、扩展市场，
+  甚至还能一键启动一个 Kubernetes 集群来学习。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; 许可证提醒</div>
+  <p>个人、教育和小企业免费。如果在工作中使用且公司员工超过 250 人或年收入超过 1000 万美元，需要付费订阅（见第 2 章）。</p>
+</div>
+
+<h3>在 Windows 上安装</h3>
+
+<p>前置条件：</p>
+<ul>
+  <li>64 位 Windows 10（22H2 及以上）或 Windows 11</li>
+  <li>在 BIOS 中开启硬件虚拟化支持（大多数新电脑默认已开启；修改 BIOS 请务必小心）</li>
+  <li><strong>WSL 2</strong>（Windows Subsystem for Linux 2）</li>
+</ul>
+
+<p>安装步骤：</p>
+<ol>
+  <li>前往 <a href="https://docs.docker.com/desktop/setup/install/windows-install/">Docker 官方文档的 Windows 安装页</a>，下载安装程序。</li>
+  <li>运行安装程序，出现提示时选择使用 <strong>WSL 2 后端</strong>。</li>
+  <li>安装完成后，从开始菜单手动启动 Docker Desktop。任务栏上的小鲸鱼图标停止动画，就表示启动完成。</li>
+  <li>打开终端（PowerShell 或 Windows Terminal），运行 <code>docker version</code> 验证。</li>
+</ol>
+
+<p>
+  Windows 专业版和企业版上的 Docker Desktop 同时支持 Linux 容器和 Windows 容器，可以右键点击系统托盘里的鲸鱼图标，
+  选择 <em>Switch to Windows containers…</em> 切换。<strong>请保持在 Linux 容器模式</strong>，本教程所有示例都是 Linux 容器。
+</p>
+
+<h3>在 Mac 上安装</h3>
+
+<p>
+  在安装之前，先了解一件重要的事：<strong>Docker Desktop for Mac 把守护进程和所有服务端组件装在一台轻量的 Linux 虚拟机里</strong>，
+  然后把 API 无缝暴露给你的 Mac。所以你在 Mac 终端里敲 <code>docker</code> 命令时，根本感觉不到背后有一台隐藏的虚拟机。
+  这也是为什么 Mac 上的 Docker Desktop 只能跑 Linux 容器 —— 一切都运行在那台 Linux 虚拟机里。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 260" role="img" aria-label="Docker Desktop 在 Mac 上的架构">
+  <rect class="bx" x="20" y="20" width="720" height="220" rx="14"/>
+  <text class="ttl" x="40" y="46">你的 Mac（macOS / Darwin 内核）</text>
+
+  <rect class="bx-b" x="40" y="80" width="200" height="120" rx="10"/>
+  <text class="ttl on-b" x="140" y="106" text-anchor="middle">Docker 客户端</text>
+  <text class="sm" x="140" y="128" text-anchor="middle">原生 Mac 程序</text>
+  <text class="mono" x="140" y="152" text-anchor="middle">docker ...</text>
+  <text class="sm" x="140" y="178" text-anchor="middle">OS/Arch: darwin/arm64</text>
+
+  <path class="ln-a" d="M242 140 H330" marker-end="url(#ar-a)"/>
+  <text class="sm" x="286" y="130" text-anchor="middle">API</text>
+
+  <rect class="bx-g" x="335" y="62" width="385" height="160" rx="12"/>
+  <text class="ttl on-g" x="527" y="86" text-anchor="middle">轻量 Linux 虚拟机（对你透明）</text>
+  <rect class="bx-a" x="355" y="100" width="165" height="100" rx="8"/>
+  <text class="ttl on-a" x="437" y="124" text-anchor="middle">Docker 引擎</text>
+  <text class="mono" x="437" y="148" text-anchor="middle">dockerd</text>
+  <text class="sm" x="437" y="170" text-anchor="middle">OS/Arch:</text>
+  <text class="sm" x="437" y="186" text-anchor="middle">linux/arm64</text>
+  <rect class="bx" x="535" y="100" width="165" height="30" rx="6"/><text class="sm" x="617" y="120" text-anchor="middle">容器 1</text>
+  <rect class="bx" x="535" y="135" width="165" height="30" rx="6"/><text class="sm" x="617" y="155" text-anchor="middle">容器 2</text>
+  <rect class="bx" x="535" y="170" width="165" height="30" rx="6"/><text class="sm" x="617" y="190" text-anchor="middle">容器 3</text>
+</svg>
+<figcaption>图 3-2　Docker Desktop for Mac：客户端在 macOS 上，引擎在 Linux 虚拟机里</figcaption>
+</figure>
+
+<p>安装方法很简单：前往 <a href="https://docs.docker.com/desktop/setup/install/mac-install/">官方文档的 Mac 安装页</a>，
+根据芯片选择 <strong>Apple silicon</strong> 或 <strong>Intel</strong> 版本下载，拖进“应用程序”文件夹，然后启动。
+等顶部状态栏的鲸鱼图标停止动画，就可以打开终端使用了。</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker version
+Client:
+ Version:           29.8.0
+ API version:       1.52
+ OS/Arch:           darwin/arm64
+ Context:           desktop-linux
+ &lt;Snip&gt;
+
+Server: Docker Desktop 4.92.0
+ Engine:
+  Version:          29.8.0
+  API version:      1.52 (minimum version 1.44)
+  OS/Arch:          linux/arm64
+ containerd:
+  Version:          v2.3.5
+ runc:
+  Version:          1.3.x
+ docker-init:
+  Version:          0.19.0
+</pre>
+</div>
+
+<p>
+  注意看 <strong>Client</strong> 的 <code>OS/Arch</code> 是 <code>darwin/arm64</code>，而 <strong>Server</strong> 的是 <code>linux/arm64</code>。
+  这正是图 3-2 的证据：客户端是原生 Mac 程序，跑在 Darwin 内核上；引擎跑在那台 Linux 虚拟机里。
+  （第 1 章练习第 3 题的答案就在这里。）Windows 上也一样，Server 显示 <code>linux/amd64</code>，因为默认假设你要跑 Linux 容器。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; 版本号不必完全一致</div>
+  <p>书中和教程里的版本号只是示例。只要 Client 和 Server 两部分都有输出，就说明 Docker 工作正常。</p>
+</div>
+
+<div class="box new">
+  <div class="t">&#10024; 最新变化：Engine 29 提高了最低 API 版本</div>
+  <p>
+    Docker Engine 29 把服务端支持的<strong>最低 API 版本提高到 1.44</strong>（对应 Docker 25.0）。
+    如果你用很老的 docker 客户端或第三方工具连接新引擎，可能会看到 “client version is too old” 之类的错误，升级客户端即可。
+  </p>
+</div>
+
+<h2 id="linux">在 Linux 上安装 Docker Engine</h2>
+
+<p>
+  在 Linux 服务器上，标准做法是从 <strong>Docker 官方软件源</strong>安装 Docker Engine。它开源免费、没有图形界面，
+  但所有核心功能都有。下面以 <strong>Ubuntu</strong> 为例（Debian、Fedora、RHEL 等请参考
+  <a href="https://docs.docker.com/engine/install/">官方安装文档</a>）。
+</p>
+
+<div class="box new">
+  <div class="t">&#10024; 与原书不同：不要用 snap 安装</div>
+  <p>
+    原书用 <code>sudo snap install docker</code> 演示安装。这个 snap 包由 Canonical 打包，版本往往滞后，
+    而且 snap 的沙箱限制会导致卷挂载等功能出现奇怪问题。Docker 官方推荐使用下面的 <strong>apt 软件源</strong>方式。
+    另外，Ubuntu 自带的 <code>docker.io</code> 包也不是 Docker 官方维护的，建议先卸载。
+  </p>
+</div>
+
+<h3>第 1 步：配置官方软件源</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+# 卸载可能存在的非官方旧包（没装过也没关系）
+$ for pkg in docker.io docker-doc docker-compose podman-docker containerd runc; do sudo apt-get remove -y $pkg; done
+
+# 添加 Docker 官方 GPG 密钥
+$ sudo apt-get update
+$ sudo apt-get install -y ca-certificates curl
+$ sudo install -m 0755 -d /etc/apt/keyrings
+$ sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+$ sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+# 添加软件源
+$ sudo tee /etc/apt/sources.list.d/docker.sources &lt;&lt;EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release &amp;&amp; echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+$ sudo apt-get update
+</pre>
+</div>
+
+<h3>第 2 步：安装</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+$ sudo apt-get install -y docker-ce docker-ce-cli containerd.io \
+    docker-buildx-plugin docker-compose-plugin
+
+# 可选：Docker Model Runner 插件（第 10 章用）
+$ sudo apt-get install -y docker-model-plugin
+</pre>
+</div>
+
+<p>这几个包各司其职：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="Docker Engine 安装包组成">
+  <rect class="bx-b" x="20"  y="30" width="135" height="80" rx="10"/>
+  <text class="ttl on-b" x="87" y="58" text-anchor="middle">docker-ce</text>
+  <text class="sm" x="87" y="80" text-anchor="middle">引擎本体</text>
+  <text class="sm" x="87" y="96" text-anchor="middle">dockerd</text>
+  <rect class="bx-b" x="165" y="30" width="135" height="80" rx="10"/>
+  <text class="ttl on-b" x="232" y="58" text-anchor="middle">docker-ce-cli</text>
+  <text class="sm" x="232" y="80" text-anchor="middle">命令行客户端</text>
+  <text class="sm" x="232" y="96" text-anchor="middle">docker</text>
+  <rect class="bx-g" x="310" y="30" width="135" height="80" rx="10"/>
+  <text class="ttl on-g" x="377" y="58" text-anchor="middle">containerd.io</text>
+  <text class="sm" x="377" y="80" text-anchor="middle">容器运行时</text>
+  <text class="sm" x="377" y="96" text-anchor="middle">containerd + runc</text>
+  <rect class="bx-a" x="455" y="30" width="135" height="80" rx="10"/>
+  <text class="ttl on-a" x="522" y="58" text-anchor="middle">buildx 插件</text>
+  <text class="sm" x="522" y="80" text-anchor="middle">构建客户端</text>
+  <text class="sm" x="522" y="96" text-anchor="middle">docker build</text>
+  <rect class="bx-a" x="600" y="30" width="140" height="80" rx="10"/>
+  <text class="ttl on-a" x="670" y="58" text-anchor="middle">compose 插件</text>
+  <text class="sm" x="670" y="80" text-anchor="middle">多容器编排</text>
+  <text class="sm" x="670" y="96" text-anchor="middle">docker compose</text>
+  <text class="lbl" x="380" y="150" text-anchor="middle">CLI 插件放在 /usr/libexec/docker/cli-plugins/，所以命令是 “docker compose” 而不是 “docker-compose”</text>
+  <text class="sm" x="380" y="176" text-anchor="middle">Docker Desktop 额外带有 scout、debug、init、model 等插件</text>
+</svg>
+<figcaption>图 3-3　Docker Engine 由哪些包组成</figcaption>
+</figure>
+
+<div class="box tip">
+  <div class="t">&#128161; 快速体验用的一键脚本</div>
+  <p>
+    如果只是在测试机上快速装一个，可以用官方的便捷脚本：<code>curl -fsSL https://get.docker.com | sh</code>。
+    它会自动完成上面的步骤。但<strong>不建议在生产环境使用</strong>，因为你没法控制装的是哪个版本。
+  </p>
+</div>
+
+<h3>第 3 步：验证</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+$ sudo systemctl status docker      # 确认守护进程在运行
+$ sudo docker run hello-world       # 跑一个测试容器
+
+Hello from Docker!
+This message shows that your installation appears to be working correctly.
+&lt;Snip&gt;
+</pre>
+</div>
+
+<h3>第 4 步（可选）：免 sudo 运行</h3>
+
+<p>
+  默认情况下每条 docker 命令都要加 <code>sudo</code>。原因是 Docker API 通过一个受保护的 Unix 套接字
+  <code>/var/run/docker.sock</code> 暴露，只有 root 和 <code>docker</code> 用户组的成员能访问。把自己加入这个组就能免 sudo：
+</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ sudo groupadd docker              # 通常安装时已经创建，报“已存在”可忽略
+$ sudo usermod -aG docker $USER
+$ newgrp docker                     # 或者注销后重新登录
+$ docker run hello-world            # 不用 sudo 了
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; docker 用户组 ≈ root 权限</div>
+  <p>
+    能访问 Docker 套接字，就能启动一个挂载了宿主机根目录的特权容器，等于拿到了整台机器的 root 权限。
+    所以<strong>只把你信任的用户加入 docker 组</strong>。对安全要求高的环境，可以考虑下面的 rootless 模式。
+  </p>
+</div>
+
+<div class="box deep">
+  <div class="t">&#128300; 深入：Rootless 模式</div>
+  <p>
+    Rootless 模式让 Docker 守护进程和容器都以<strong>普通用户</strong>身份运行，即使容器被攻破，攻击者也拿不到宿主机的 root 权限。
+    安装好 Docker 后，以普通用户运行 <code>dockerd-rootless-setuptool.sh install</code> 即可启用。
+    代价是有一些限制（比如不能直接绑定 1024 以下的端口、部分网络和存储驱动不可用）。详见
+    <a href="https://docs.docker.com/engine/security/rootless/">官方文档</a>。
+  </p>
+</div>
+
+<h2 id="multipass">用 Multipass 创建 Docker 虚拟机</h2>
+
+<p>
+  如果你用不了 Docker Desktop，或者想要<strong>多台</strong>装好 Docker 的机器来做集群实验，
+  <a href="https://multipass.run/install">Multipass</a> 是个好选择。它是 Canonical 出品的免费工具，
+  能在 Linux、Mac、Windows 上一条命令创建云风格的 Ubuntu 虚拟机。
+</p>
+
+<p>你只需要记住三条命令：<code>multipass launch</code>、<code>multipass ls</code>、<code>multipass shell</code>。</p>
+
+<div class="code" data-lang="bash">
+<pre>
+# 基于预装了 Docker 的 "docker" 镜像创建一台叫 node1 的虚拟机
+$ multipass launch docker --name node1
+
+# 查看虚拟机和它的 IP（后面章节会用到 192.168.x.x 这个地址）
+$ multipass ls
+Name     State     IPv4             Image
+node1    Running   192.168.64.37    Ubuntu 24.04 LTS
+                   172.17.0.1
+
+# 登录进去
+$ multipass shell node1
+ubuntu@node1:~$ docker --version
+</pre>
+</div>
+
+<p>输入 <code>exit</code> 退出虚拟机；不需要时用 <code>multipass delete node1</code> 和 <code>multipass purge</code> 彻底删除。</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 不想装任何东西？</div>
+  <p>
+    <a href="https://labs.play-with-docker.com/">Play with Docker</a> 提供免费的在线 Docker 实验环境（需要 Docker Hub 账号），
+    每次会话 4 小时，可以一键创建多个节点，非常适合第 12–14 章的集群实验。
+  </p>
+</div>
+
+<h2 id="other">其他选择</h2>
+
+<p>除了 Docker 官方的产品，社区还有一些兼容 Docker CLI 的桌面工具，思路都是“在 Mac / Windows 上跑一台 Linux 虚拟机”：</p>
+
+<div class="cards">
+  <div class="card"><h4>Podman Desktop</h4><p>Red Hat 主导，无守护进程、默认 rootless，CLI 与 docker 基本兼容。</p></div>
+  <div class="card"><h4>Rancher Desktop</h4><p>SUSE 出品，开源免费，自带 Kubernetes（k3s），可选 dockerd 或 containerd。</p></div>
+  <div class="card"><h4>OrbStack</h4><p>macOS 专用，启动快、资源占用低，商业软件（个人免费）。</p></div>
+  <div class="card"><h4>Colima</h4><p>macOS / Linux 上的开源命令行工具，轻量，适合喜欢终端的人。</p></div>
+</div>
+
+<p>它们都能跑本教程的大部分示例，但 <code>docker debug</code>、<code>docker scout</code>、Model Runner 等 Docker Desktop 独有功能可能不可用。</p>
+
+<h2 id="verify">安装后必会的两条命令</h2>
+
+<div class="tw"><table>
+  <tr><th>命令</th><th>作用</th><th>什么时候用</th></tr>
+  <tr><td><code>docker version</code></td><td>分别显示客户端和服务端的版本</td><td>检查 CLI 和引擎是否都正常；Server 部分报错通常说明守护进程没启动或没有权限</td></tr>
+  <tr><td><code>docker info</code></td><td>显示引擎的详细信息：容器/镜像数量、存储驱动、已安装插件、是否启用 Swarm 等</td><td>排查问题、确认配置</td></tr>
+</table></div>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker info
+Client: Docker Engine - Community
+ Version:    29.8.0
+ Context:    default
+ Plugins:
+  buildx: Docker Buildx (Docker Inc.)
+  compose: Docker Compose (Docker Inc.)
+    Version:  v5.5.1
+  model: Docker Model Runner (Docker Inc.)
+&lt;Snip&gt;
+Server:
+ Containers: 0
+ Images: 0
+ Server Version: 29.8.0
+ Storage Driver: overlayfs
+  driver-type: io.containerd.snapshotter.v1
+&lt;Snip&gt;
+</pre>
+</div>
+
+<div class="box new">
+  <div class="t">&#10024; 最新变化：containerd 镜像存储成为默认</div>
+  <p>
+    注意上面 <code>Storage Driver</code> 那一行。从 Docker Engine 29 起，<strong>全新安装默认使用 containerd 镜像存储</strong>
+    （显示为 <code>driver-type: io.containerd.snapshotter.v1</code>），而不再是传统的 <code>overlay2</code> 图驱动。
+    从旧版本升级上来的机器会保留原来的设置。containerd 镜像存储原生支持多平台镜像、镜像证明（attestation）等新功能，第 5、6 章会再提到它。
+  </p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>Docker 几乎可以装在任何地方。桌面电脑首选 <strong>Docker Desktop</strong>：功能最全、有图形界面、自带各种插件。</li>
+  <li>Docker Desktop 在 Mac 和 Windows 上通过一台隐藏的 Linux 虚拟机运行引擎，所以 Server 的 OS 显示为 <code>linux</code>。</li>
+  <li>Linux 服务器用 <strong>官方 apt/dnf 软件源</strong>安装 Docker Engine，不推荐 snap 或发行版自带的旧包。</li>
+  <li>加入 <code>docker</code> 用户组可以免 sudo，但这等同于 root 权限；安全敏感场景考虑 rootless 模式。</li>
+  <li>需要多节点实验环境时，用 Multipass 或 Play with Docker。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>按照本章内容安装 Docker，运行 <code>docker version</code>，记下 Client 和 Server 的 <code>OS/Arch</code>，解释它们为什么相同或不同。</li>
+    <li>运行 <code>docker run hello-world</code>，仔细读一遍输出 —— 它用 4 个步骤解释了刚刚发生了什么，和第 5 章要讲的内容完全对应。</li>
+    <li>运行 <code>docker info</code>，找出你的存储驱动（Storage Driver）是什么，以及装了哪些 CLI 插件。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

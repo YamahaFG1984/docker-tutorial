@@ -1,0 +1,681 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 10 章 · Docker 与 AI — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="10">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 10 章</span>
+<h1>Docker 与 AI</h1>
+<p class="lede">
+  想在自己电脑上跑大语言模型（LLM），又不想把数据发给云端？Docker 提供了 <strong>Docker Model Runner（DMR）</strong>：
+  像拉镜像一样拉模型，像跑容器一样跑模型，再通过 OpenAI 兼容的 API 接入你的应用和 Compose 项目。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解 DMR 为什么在容器<strong>之外</strong>运行模型</li>
+    <li>理解 DMR 的架构：推理后端、API 端点、模型存储、OCI 模型制品</li>
+    <li>会用 <code>docker model</code> 拉取、查看、运行、删除模型</li>
+    <li>用 curl 调用 DMR 的 OpenAI 兼容 API</li>
+    <li>用 Compose 的 <code>models:</code> 语法部署一个依赖大模型的聊天应用</li>
+    <li>把 Open WebUI 之类的第三方应用接到 DMR 上</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<div class="box new">
+  <div class="t">&#10024; 本章相对原书的主要更新</div>
+  <ul>
+    <li>DMR 已从 Docker Desktop 的“开发中功能”变为正式功能，并支持 <strong>Linux 上的 Docker Engine</strong>。</li>
+    <li>推理后端从只有 llama.cpp，扩展到 <strong>llama.cpp、vLLM、Diffusers</strong>。</li>
+    <li>API 除了 OpenAI 兼容，还提供 <strong>Anthropic 兼容</strong>和 <strong>Ollama 兼容</strong>端点。</li>
+    <li>Compose 中声明模型的写法从 <code>provider: type: model</code> 改为<strong>顶层 <code>models:</code> 元素</strong>。</li>
+  </ul>
+</div>
+
+<h2 id="why">为什么要在本地跑模型</h2>
+
+<p>Docker 提供两种部署 AI 应用的方式：<strong>Docker Model Runner（推荐）</strong>和<strong>把模型服务放进容器</strong>。两者都是在本地运行模型，适合这些场景：</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#128274;</span><h4>隐私</h4><p>数据不出本机，适合有合规要求的企业。</p></div>
+  <div class="card"><span class="ic">&#128176;</span><h4>成本可控</h4><p>没有按 token 计费的云账单。</p></div>
+  <div class="card"><span class="ic">&#9889;</span><h4>低延迟</h4><p>不走网络，适合对延迟敏感的应用。</p></div>
+  <div class="card"><span class="ic">&#128295;</span><h4>完全掌控</h4><p>自由定制提示词、上下文长度，甚至微调。</p></div>
+</div>
+
+<h2 id="background">DMR 的设计思路：模型跑在容器外面</h2>
+
+<p>
+  是的，你没看错：<strong>Docker Model Runner 是在容器之外执行 AI 模型的！</strong>原因是容器很难访问 GPU、NPU、TPU 这些让模型跑得飞快的 AI 加速硬件 ——
+  它们大多是各厂商私有的，有各自的驱动和 SDK，Docker 和整个生态很难为每一种都开发并维护支持。
+</p>
+<p>
+  没错，装了 NVIDIA Container Toolkit 之后，容器可以访问较新的 NVIDIA GPU。但它安装复杂，而且只支持 NVIDIA 的 CUDA GPU。
+  把模型放在容器外执行，DMR 两全其美：
+</p>
+<ul>
+  <li>和 Docker 工具链及整个云原生生态无缝集成；</li>
+  <li>更容易用上宿主机的 AI 加速硬件（Mac 的 Apple 芯片 GPU、NVIDIA/AMD GPU 等）。</li>
+</ul>
+
+<h2 id="arch">DMR 的架构</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 400" role="img" aria-label="Docker Model Runner 架构">
+  <!-- 顶部：客户端 -->
+  <rect class="bx-b" x="20" y="20" width="170" height="70" rx="10"/>
+  <text class="ttl on-b" x="105" y="46" text-anchor="middle">容器里的应用</text>
+  <text class="mono" x="105" y="66" text-anchor="middle" style="font-size:10px">model-runner.docker.internal</text>
+  <text class="sm" x="105" y="82" text-anchor="middle">（Desktop）</text>
+  <rect class="bx-b" x="210" y="20" width="170" height="70" rx="10"/>
+  <text class="ttl on-b" x="295" y="46" text-anchor="middle">本机程序</text>
+  <text class="mono" x="295" y="68" text-anchor="middle">localhost:12434</text>
+  <rect class="bx-b" x="400" y="20" width="170" height="70" rx="10"/>
+  <text class="ttl on-b" x="485" y="46" text-anchor="middle">其他主机</text>
+  <text class="mono" x="485" y="68" text-anchor="middle">&lt;主机IP&gt;:12434</text>
+  <rect class="bx-p" x="590" y="20" width="150" height="70" rx="10"/>
+  <text class="ttl on-p" x="665" y="46" text-anchor="middle">Docker CLI</text>
+  <text class="mono" x="665" y="68" text-anchor="middle">docker model …</text>
+
+  <path class="ln-b" d="M105 92 L300 140" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M295 92 L330 140" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M485 92 L400 140" marker-end="url(#ar-b)"/>
+  <path class="ln-p" d="M665 92 L480 140" marker-end="url(#ar-p)"/>
+
+  <!-- DMR -->
+  <rect class="bx-a" x="170" y="144" width="420" height="200" rx="14"/>
+  <text class="ttl on-a" x="380" y="168" text-anchor="middle">Docker Model Runner</text>
+  <rect class="bx" x="190" y="180" width="380" height="54" rx="8"/>
+  <text class="ttl" x="380" y="202" text-anchor="middle">API 层</text>
+  <text class="sm" x="380" y="222" text-anchor="middle">模型管理 · OpenAI 兼容 · Anthropic 兼容 · Ollama 兼容</text>
+  <rect class="bx" x="190" y="244" width="380" height="54" rx="8"/>
+  <text class="ttl" x="380" y="266" text-anchor="middle">调度：按需加载 / 卸载模型</text>
+  <text class="sm" x="380" y="286" text-anchor="middle">可插拔推理后端（runtime / inference engine）</text>
+  <rect class="bx-g" x="190" y="306" width="120" height="30" rx="6"/><text class="sm on-g" x="250" y="326" text-anchor="middle">llama.cpp（默认）</text>
+  <rect class="bx-g" x="320" y="306" width="120" height="30" rx="6"/><text class="sm on-g" x="380" y="326" text-anchor="middle">vLLM</text>
+  <rect class="bx-g" x="450" y="306" width="120" height="30" rx="6"/><text class="sm on-g" x="510" y="326" text-anchor="middle">Diffusers</text>
+
+  <!-- 侧边：模型存储与 Hub -->
+  <rect class="bx-d" x="20" y="200" width="130" height="90" rx="10"/>
+  <text class="ttl" x="85" y="226" text-anchor="middle">本地模型存储</text>
+  <text class="mono" x="85" y="250" text-anchor="middle" style="font-size:10px">~/.docker/models</text>
+  <text class="sm" x="85" y="272" text-anchor="middle">GGUF / Safetensors</text>
+  <path class="ln" d="M152 245 H166"/>
+
+  <rect class="bx-d" x="610" y="200" width="130" height="90" rx="10"/>
+  <text class="ttl" x="675" y="226" text-anchor="middle">Docker Hub</text>
+  <text class="sm" x="675" y="248" text-anchor="middle">ai/ 命名空间</text>
+  <text class="sm" x="675" y="266" text-anchor="middle">OCI 仓库</text>
+  <path class="ln" d="M608 245 H594" marker-end="url(#ar)"/>
+  <text class="sm" x="600" y="236" text-anchor="middle">pull</text>
+
+  <rect class="bx" x="20" y="354" width="720" height="36" rx="8"/>
+  <text class="ttl" x="380" y="377" text-anchor="middle">宿主机硬件：Apple GPU (Metal) · NVIDIA (CUDA) · AMD (ROCm) · Vulkan · CPU</text>
+</svg>
+<figcaption>图 10-1　Docker Model Runner 架构</figcaption>
+</figure>
+
+<p>逐块解读：</p>
+<ul>
+  <li><strong>DMR 进程</strong>：在 Docker Desktop 上，它是独立于 Docker 引擎的<strong>宿主机进程</strong>；对 Mac 用户来说，这意味着它跑在 Docker Desktop 虚拟机<strong>之外</strong>，可以直接访问 GPU。
+    在 Linux 的 Docker Engine 上，它以一个专门配置、可访问 GPU 的组件形式运行。</li>
+  <li><strong>可插拔推理后端</strong>：真正加载和执行模型、提供推理的核心引擎。默认是 <strong>llama.cpp</strong>（到处都能跑，适合本地开发）；
+    <strong>vLLM</strong> 面向高吞吐的生产场景（需要 NVIDIA GPU）；<strong>Diffusers</strong> 用于图像生成。</li>
+  <li><strong>API 端点</strong>：一组模型管理端点，加上 OpenAI、Anthropic、Ollama 兼容的推理端点。容器、本机程序、其他主机都能访问。</li>
+  <li><strong>模型存储</strong>：模型从 Docker Hub 等 OCI 仓库拉取，存放在本地（<code>~/.docker/models</code>），通常有好几个 GB。</li>
+  <li><strong>CLI</strong>：<code>docker model</code> 插件负责拉取、推送、运行、管理模型。</li>
+</ul>
+
+<h3>DMR vs Ollama vs LM Studio</h3>
+
+<p>
+  如果你已经在用本地模型，会发现 DMR 和 Ollama、LM Studio 很像：它们都可以用 llama.cpp 作为核心推理引擎，都能提供 OpenAI 风格的端点，核心功能和性能都差不多。
+  DMR 的优势在于和 <strong>Docker 工具链、Compose、Docker Hub 以及整个云原生生态的无缝集成</strong>。如果你已经在用 Docker，或打算用 Docker，就值得认真考虑 DMR，
+  这样可以把工具和生态合并到一处。当然，引入任何新工具前，都应该对照自己的需求做测试。
+</p>
+
+<h2 id="install">启用 Docker Model Runner</h2>
+
+<div class="tw"><table>
+  <tr><th>平台</th><th>要求</th><th>启用方式</th></tr>
+  <tr><td>macOS</td><td>Apple 芯片</td><td rowspan="2">Docker Desktop → Settings → <strong>AI</strong> → 勾选 <em>Enable Docker Model Runner</em>；
+    如需从本机程序访问，再勾选 <em>Enable host-side TCP support</em>（默认端口 12434）→ Apply</td></tr>
+  <tr><td>Windows</td><td>NVIDIA GPU（或 Qualcomm Adreno 等）</td></tr>
+  <tr><td>Linux</td><td>Docker Engine；可选 NVIDIA / AMD / Vulkan GPU</td><td><code>sudo apt-get install docker-model-plugin</code>（第 3 章已介绍官方软件源）</td></tr>
+</table></div>
+
+<p>没有受支持的 GPU 也没关系，DMR 也能在 CPU 上运行，只是慢一些。也可以用命令行启用 Desktop 里的 DMR：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker desktop enable model-runner --tcp 12434
+</pre>
+</div>
+
+<p>验证是否正常运行：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker model status
+Docker Model Runner is running
+
+Status:
+llama.cpp: running llama.cpp latest-metal (sha256:ad58230f548...) version: a0f7016
+</pre>
+</div>
+
+<p>输出说明 DMR 正在运行，使用 llama.cpp 作为推理后端，而 llama.cpp 又通过 Apple 的 Metal API 让模型用上了 MacBook 的 GPU。</p>
+
+<p>本章的示例代码在作者仓库里：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ git clone https://github.com/nigelpoulton/ddd-book.git
+$ cd ddd-book/dmr
+</pre>
+</div>
+
+<h2 id="explore">探索 Docker Model Runner</h2>
+
+<h3>从 Docker Hub 拉取模型</h3>
+
+<p>
+  Docker 在 Docker Hub 的 <a href="https://hub.docker.com/u/ai"><code>ai</code> 命名空间</a>下维护了一个模型目录。点击某个模型能看到它的<strong>模型卡片</strong>：
+  架构、训练截止日期、各种变体，甚至基准测试数据（这些数据来自模型发布方，你仍应针对自己的需求自行测试）。
+</p>
+
+<p>
+  下面拉取一个<strong>量化（quantized）</strong>版的 Gemma3 4B 模型。量化是一种在不太损失准确度和性能的前提下缩小模型体积的方法。即便量化后，模型也常常有好几个 GB，下载需要一些时间：
+</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker model pull ai/gemma3:4B-Q4_K_M
+Downloaded: 2.31 GB
+Model pulled successfully
+
+$ docker model ls
+MODEL NAME            PARAMETERS  QUANTIZATION     ARCHITECTURE  MODEL ID      SIZE
+ai/gemma3:4B-Q4_K_M   3.88 B      IQ2_XXS/Q4_K_M   gemma3        0b329b335467  2.31 GiB
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 看懂模型标签</div>
+  <p><code>ai/gemma3:4B-Q4_K_M</code> 里：<code>4B</code> 表示约 40 亿参数；<code>Q4_K_M</code> 是量化方式（大约每个参数 4 bit，<code>K_M</code> 是 llama.cpp 的一种量化变体）。
+    参数越多通常越聪明但越慢、越占内存；量化位数越低越小越快但精度越差。入门可以先试 <code>ai/smollm2</code>、<code>ai/qwen3:0.6B-Q4_K_M</code> 这类很小的模型。</p>
+</div>
+
+<h3>模型也是 OCI 制品</h3>
+
+<p>DMR 从 Docker Hub 拉取的模型，是以一种新的 <strong>OCI 制品</strong>形式存储和分发的（遵循 Docker 的 <a href="https://github.com/docker/model-spec">model-spec</a>）。看看它的 manifest：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker manifest inspect ai/gemma3:4B-Q4_K_M
+{
+  "schemaVersion": 2,
+  "mediaType": "application/vnd.oci.image.manifest.v1+json",        &lt;&lt;--- 标准 OCI manifest
+  "config": {
+    "mediaType": "application/vnd.docker.ai.model.config.v0.1+json", &lt;&lt;--- 模型配置
+    "size": 372,
+    "digest": "sha256:22273fdf4e6dbaf...af0e6569be41539"
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.docker.ai.gguf.v3",              &lt;&lt;--- 模型权重（GGUF 文件）
+      "size": 2489757856,
+      "digest": "sha256:09b370de51ad3...fc96ab2dc1adaa7"
+    },
+    {
+      "mediaType": "application/vnd.docker.ai.license",              &lt;&lt;--- 许可证
+      "size": 8346,
+      "digest": "sha256:a4b03d96571f0...dc90e3f960823e5"
+    }
+  ]
+}
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="镜像与模型都是 OCI 制品">
+  <rect class="bx-a" x="20" y="20" width="340" height="160" rx="12"/>
+  <text class="ttl on-a" x="190" y="46" text-anchor="middle">容器镜像</text>
+  <rect class="bx" x="40" y="60" width="300" height="28" rx="5"/><text class="sm" x="190" y="79" text-anchor="middle">manifest</text>
+  <rect class="bx" x="40" y="94" width="300" height="28" rx="5"/><text class="sm" x="190" y="113" text-anchor="middle">config：环境变量、启动命令…</text>
+  <rect class="bx" x="40" y="128" width="300" height="40" rx="5"/><text class="sm" x="190" y="152" text-anchor="middle">layers：文件系统层 (tar.gz)</text>
+  <rect class="bx-p" x="400" y="20" width="340" height="160" rx="12"/>
+  <text class="ttl on-p" x="570" y="46" text-anchor="middle">AI 模型</text>
+  <rect class="bx" x="420" y="60" width="300" height="28" rx="5"/><text class="sm" x="570" y="79" text-anchor="middle">manifest（同样的格式）</text>
+  <rect class="bx" x="420" y="94" width="300" height="28" rx="5"/><text class="sm" x="570" y="113" text-anchor="middle">config：格式、量化、参数量、架构</text>
+  <rect class="bx" x="420" y="128" width="300" height="40" rx="5"/><text class="sm" x="570" y="152" text-anchor="middle">layers：GGUF 权重 + 许可证</text>
+</svg>
+<figcaption>图 10-2　同样的 OCI 结构，装的是不同的东西</figcaption>
+</figure>
+
+<p>拉取模型时，DMR 读取 manifest，拉取 config 和两个层，以 SHA 为文件名存入本地模型存储，你可以直接查看：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ ls -lh ~/.docker/models/blobs/sha256
+-rw-r--r--@ 1  2.3G 09b370de51ad3bde8c3aea...667ddbafc96ab2dc1adaa7   &lt;&lt;---- 模型文件 (GGUF)
+-rw-r--r--@ 1  372B 22273fd2f4e6dbaf5b5dae...308eb0faf0e6569be41539   &lt;&lt;---- 模型配置 JSON
+-rw-r--r--@ 1  8.2K a4b03d96571f0ad98b1253...328909bdc90e3f960823e5   &lt;&lt;---- 许可证
+
+$ docker model inspect ai/gemma3:4B-Q4_K_M       # 更友好的查看方式
+</pre>
+</div>
+
+<p>
+  把模型打包成 OCI 制品，意味着可以直接复用企业里已有的公共和私有 OCI 仓库 —— 它们本来就存着容器镜像、签名、SBOM、OPA 策略、Helm Chart、Wasm 模块、MCP 工具……
+  现在再加上 AI 模型，就不用为模型单独建一套存储了。你也可以用 <code>docker model package</code> 把自己的 GGUF 文件打包，再 <code>docker model push</code> 推到仓库。
+</p>
+
+<h3>测试模型</h3>
+
+<p>最简单的测试方式是命令行。可以一次性提问，也可以进入交互式 REPL：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker model run ai/gemma3:4B-Q4_K_M "用一句话介绍 Docker"
+Docker 是一个把应用及其依赖打包进可移植容器、让它在任何环境中一致运行的平台。
+
+$ docker model run ai/gemma3:4B-Q4_K_M
+Interactive chat mode started. Type '/bye' to exit.
+&gt; How long is a day on Mars?
+A day on Mars, also known as a "sol," is about 24 hours, 39 minutes, and 35 seconds long...
+&gt; /bye
+</pre>
+</div>
+
+<p>Docker Desktop 也提供了图形界面：点击左侧导航栏的 <strong>Models</strong>，选择一个模型即可开始聊天，而且会保留对话上下文。</p>
+
+<h2 id="api">调用 DMR 的 API</h2>
+
+<p>DMR 提供一组原生的模型管理端点，以及多套兼容主流厂商格式的推理端点：</p>
+
+<div class="tw"><table>
+  <tr><th>类别</th><th>端点</th><th>方法</th></tr>
+  <tr><td rowspan="3">DMR 模型管理</td><td><code>/models</code></td><td>GET</td></tr>
+  <tr><td><code>/models/create</code></td><td>POST</td></tr>
+  <tr><td><code>/models/{namespace}/{name}</code></td><td>GET、DELETE</td></tr>
+  <tr><td rowspan="4">OpenAI 兼容</td><td><code>/engines/v1/models</code></td><td>GET</td></tr>
+  <tr><td><code>/engines/v1/chat/completions</code></td><td>POST</td></tr>
+  <tr><td><code>/engines/v1/completions</code></td><td>POST</td></tr>
+  <tr><td><code>/engines/v1/embeddings</code></td><td>POST</td></tr>
+  <tr><td>Anthropic 兼容</td><td><code>/anthropic/v1/messages</code></td><td>POST</td></tr>
+  <tr><td>Ollama 兼容</td><td><code>/api/tags</code>、<code>/api/chat</code>、<code>/api/generate</code></td><td>GET / POST</td></tr>
+</table></div>
+
+<p>从哪里访问，用哪个基础地址：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 180" role="img" aria-label="不同位置访问 DMR 的地址">
+  <rect class="bx" x="20" y="20" width="220" height="140" rx="12"/>
+  <text class="ttl" x="130" y="46" text-anchor="middle">容器内（Desktop）</text>
+  <text class="mono" x="130" y="80" text-anchor="middle" style="font-size:10.5px">http://model-runner</text>
+  <text class="mono" x="130" y="96" text-anchor="middle" style="font-size:10.5px">.docker.internal</text>
+  <text class="sm" x="130" y="130" text-anchor="middle">所有容器都能用的特殊主机名</text>
+  <rect class="bx" x="270" y="20" width="220" height="140" rx="12"/>
+  <text class="ttl" x="380" y="46" text-anchor="middle">容器内（Engine）</text>
+  <text class="mono" x="380" y="88" text-anchor="middle">http://172.17.0.1:12434</text>
+  <text class="sm" x="380" y="130" text-anchor="middle">默认 bridge 网关地址</text>
+  <rect class="bx" x="520" y="20" width="220" height="140" rx="12"/>
+  <text class="ttl" x="630" y="46" text-anchor="middle">本机 / 其他主机</text>
+  <text class="mono" x="630" y="80" text-anchor="middle">http://localhost:12434</text>
+  <text class="mono" x="630" y="100" text-anchor="middle">http://&lt;IP&gt;:12434</text>
+  <text class="sm" x="630" y="130" text-anchor="middle">Desktop 需开启 host-side TCP</text>
+</svg>
+<figcaption>图 10-3　DMR 的访问地址</figcaption>
+</figure>
+
+<p>先列出可用模型，确认 API 里用的模型名：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ curl -s localhost:12434/engines/v1/models | jq
+{
+  "object": "list",
+  "data": [
+    { "id": "ai/gemma3:4B-Q4_K_M", "object": "model", "created": 1742979452, "owned_by": "docker" }
+  ]
+}
+</pre>
+</div>
+
+<p>然后向 OpenAI 兼容的 chat/completions 端点发送问题：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ curl -s http://localhost:12434/engines/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+      "model": "ai/gemma3:4B-Q4_K_M",
+      "messages": [
+        { "role": "system", "content": "Keep your responses to one sentence only." },
+        { "role": "user",   "content": "How long is a day on Mars?" }
+      ],
+      "temperature": 0.7,
+      "max_tokens": 500
+    }' | jq -r '.choices[0].message.content'
+A day on Mars, also known as a sol, is approximately 24.6 hours long.
+</pre>
+</div>
+
+<ul>
+  <li><code>model</code>：要用的模型名；</li>
+  <li><code>messages</code>：<strong>system</strong> 消息告诉模型怎么回答（这里要求只回答一句话），<strong>user</strong> 消息是你的问题；</li>
+  <li><code>temperature</code>：创造性，通常在 0–1 之间，0 最可预测，1 最有创意；</li>
+  <li><code>max_tokens</code>：限制回答长度。</li>
+</ul>
+
+<p>如果 DMR 有多个推理后端，可以在路径里指定，例如 <code>/engines/llama.cpp/v1/chat/completions</code>。</p>
+
+<div class="box key">
+  <div class="t">&#9733; 这意味着什么</div>
+  <p>
+    因为端点和 OpenAI API 格式兼容，<strong>任何用 OpenAI SDK 写的程序，只要把 <code>base_url</code> 改成 DMR 的地址，就能改用本地模型</strong>，代码几乎不用动。
+    本章的聊天应用后端就是这么做的：<code>AsyncOpenAI(base_url=MODEL_HOST, api_key="not-needed")</code>。
+  </p>
+</div>
+
+<h2 id="compose">在 Compose 中使用 DMR</h2>
+
+<p>现在用 Compose 部署一个以 DMR 作为推理服务的聊天应用。它有三部分：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="聊天应用架构：前端、后端与 DMR">
+  <rect class="bx-b" x="20" y="80" width="130" height="70" rx="10"/>
+  <text class="ttl on-b" x="85" y="108" text-anchor="middle">浏览器</text>
+  <text class="mono" x="85" y="130" text-anchor="middle">:3000</text>
+  <path class="ln-a" d="M152 115 H196" marker-end="url(#ar-a)"/>
+  <rect class="bx" x="200" y="20" width="540" height="190" rx="14"/>
+  <text class="ttl" x="220" y="44">Compose 项目 dmr</text>
+  <rect class="bx-a" x="220" y="70" width="150" height="90" rx="10"/>
+  <text class="ttl on-a" x="295" y="96" text-anchor="middle">frontend</text>
+  <text class="sm" x="295" y="118" text-anchor="middle">Remix 聊天界面</text>
+  <text class="mono" x="295" y="140" text-anchor="middle">:3000</text>
+  <path class="ln-a" d="M372 115 H406" marker-end="url(#ar-a)"/>
+  <text class="sm" x="389" y="106" text-anchor="middle">HTTP</text>
+  <rect class="bx-g" x="410" y="70" width="150" height="90" rx="10"/>
+  <text class="ttl on-g" x="485" y="96" text-anchor="middle">backend</text>
+  <text class="sm" x="485" y="118" text-anchor="middle">FastAPI</text>
+  <text class="mono" x="485" y="140" text-anchor="middle">:8000</text>
+  <path class="ln-p" d="M562 115 H596" marker-end="url(#ar-p)"/>
+  <text class="sm" x="579" y="106" text-anchor="middle">流式</text>
+  <rect class="bx-p" x="600" y="70" width="125" height="90" rx="10"/>
+  <text class="ttl on-p" x="662" y="96" text-anchor="middle">DMR</text>
+  <text class="sm" x="662" y="118" text-anchor="middle">models: llm</text>
+  <text class="sm" x="662" y="140" text-anchor="middle">gemma3</text>
+  <text class="sm" x="470" y="192" text-anchor="middle">backend 调用 DMR 的 chat/completions（stream=true），把回答逐字流式转发给前端</text>
+</svg>
+<figcaption>图 10-4　聊天应用的架构</figcaption>
+</figure>
+
+<p>用 2026 年的 Compose 语法，这个应用的 Compose 文件这样写：</p>
+
+<div class="code" data-lang="yaml" data-file="dmr/compose.yaml（新语法）">
+<pre>
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    models:                          # 声明这个服务要用哪个模型
+      llm:
+        endpoint_var: MODEL_HOST     # 把模型的 API 地址注入到这个环境变量
+        model_var: LLM_MODEL_NAME    # 把模型名注入到这个环境变量
+
+models:                              # 顶层：定义应用需要的模型
+  llm:
+    model: ai/gemma3:4B-Q4_K_M
+    context_size: 8192               # 可选：上下文长度
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="Compose models 元素如何把模型信息注入容器">
+  <rect class="bx-p" x="20" y="30" width="220" height="130" rx="12"/>
+  <text class="ttl on-p" x="130" y="56" text-anchor="middle">顶层 models.llm</text>
+  <text class="mono" x="130" y="82" text-anchor="middle" style="font-size:11px">model: ai/gemma3:4B-Q4_K_M</text>
+  <text class="sm" x="130" y="110" text-anchor="middle">Compose 启动时：</text>
+  <text class="sm" x="130" y="128" text-anchor="middle">确保 DMR 已拉取并能提供</text>
+  <text class="sm" x="130" y="144" text-anchor="middle">这个模型</text>
+  <path class="ln-a" d="M242 95 H300" marker-end="url(#ar-a)"/>
+  <rect class="bx-g" x="305" y="30" width="435" height="130" rx="12"/>
+  <text class="ttl on-g" x="325" y="56">backend 容器里自动出现的环境变量</text>
+  <text class="mono" x="325" y="88" style="font-size:10.5px">MODEL_HOST=http://model-runner.docker.internal/engines/v1/</text>
+  <text class="mono" x="325" y="112" style="font-size:10.5px">LLM_MODEL_NAME=ai/gemma3:4B-Q4_K_M</text>
+  <text class="sm" x="325" y="142">应用代码只读环境变量，不写死地址和模型名</text>
+  <text class="lbl" x="380" y="194" text-anchor="middle">短写法 models: [llm] 会自动生成 LLM_URL 和 LLM_MODEL 两个变量</text>
+</svg>
+<figcaption>图 10-5　models 元素把“用哪个模型、去哪里调用”注入到服务里</figcaption>
+</figure>
+
+<p>Compose 的 <code>models</code> 有两种服务级写法：</p>
+
+<div class="vs">
+  <div class="old"><div class="h">短写法：自动生成变量名</div>
+  <div class="code" data-lang="yaml"><pre>
+services:
+  app:
+    image: my-app
+    models:
+      - llm
+# 注入 LLM_URL、LLM_MODEL
+</pre></div></div>
+  <div class="new"><div class="h">长写法：自定义变量名</div>
+  <div class="code" data-lang="yaml"><pre>
+services:
+  app:
+    image: my-app
+    models:
+      llm:
+        endpoint_var: AI_MODEL_URL
+        model_var: AI_MODEL_NAME
+</pre></div></div>
+</div>
+
+<div class="box new">
+  <div class="t">&#10024; 与原书的写法对比</div>
+  <p>原书（以及作者仓库里的 <code>dmr/compose.yaml</code>）使用的是早期的 <code>provider</code> 写法：一个名为 <code>dmr</code> 的“假服务”，其他服务通过 <code>depends_on: [dmr]</code> 依赖它，
+    模型地址则写在 <code>.env</code> 里：</p>
+  <div class="code" data-lang="yaml"><pre>
+  dmr:
+    provider:
+      type: model
+      options:
+        model: ${LLM_MODEL_NAME}
+</pre></div>
+  <p>新的 <code>models:</code> 顶层元素让模型成为 Compose 的一等公民：不再需要假服务，地址和模型名也会自动注入。
+    如果你用的是较老的 Compose 版本，仓库里的原文件仍然可以运行。</p>
+</div>
+
+<p>部署应用：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker compose up --build --detach
+[+] Building 3.3s (25/25) FINISHED
+[+] Running 5/5
+ ✔ backend                    Built
+ ✔ frontend                   Built
+ ✔ Network dmr_default        Created
+ ✔ Container dmr-backend-1    Started
+ ✔ Container dmr-frontend-1   Started
+</pre>
+</div>
+
+<p>
+  Docker 自动为项目创建了一个叫 <code>default</code> 的网络，构建前端和后端镜像，确保模型可用后依次启动服务。
+  打开 <code>http://localhost:3000</code> 就可以和聊天机器人对话了。它会保留对话历史、根据前文推断上下文；输入框下方的小字显示的是 DMR 正在使用的模型名。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; 连接远程 DMR</div>
+  <p>后端的 <code>MODEL_HOST</code> 也可以指向另一台机器上的 DMR：<code>http://&lt;主机&gt;:12434/engines/v1</code>。这时就不要用 <code>models:</code> 声明了，直接用 <code>environment:</code> 设置变量即可。</p>
+</div>
+
+<h2 id="openwebui">接入第三方应用：Open WebUI</h2>
+
+<p>
+  理论上，任何支持 OpenAI 兼容接口的第三方应用都能接入 DMR。<a href="https://www.openwebui.com/">Open WebUI</a> 是一个流行的开源 AI 平台，
+  和 DMR 组合起来，就能得到一个外观和体验都接近 ChatGPT、Claude 的本地聊天机器人。
+</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker model pull ai/qwen3:0.6B-Q4_K_M       # 再拉一个小模型，方便在界面里切换
+$ docker model ls
+MODEL NAME             PARAMETERS  QUANTIZATION     ARCH    MODEL ID      SIZE
+ai/gemma3:4B-Q4_K_M    3.88 B      IQ2_XXS/Q4_K_M   gemma3  0b329b335467  2.31 GiB
+ai/qwen3:0.6B-Q4_K_M   751.63 M    IQ2_XXS/Q4_K_M   qwen3   18e5114fc13b  456.11 MiB
+</pre>
+</div>
+
+<div class="code" data-lang="yaml" data-file="openwebui/compose.yaml（新语法）">
+<pre>
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    environment:
+      - WEBUI_AUTH=False
+      - OPENAI_API_KEY=na              # DMR 不需要密钥，随便填
+    volumes:
+      - open-webui:/app/backend/data   # 保存配置和对话记录
+    ports:
+      - "3001:8080"
+    restart: always
+    models:
+      llm:
+        endpoint_var: OPENAI_API_BASE_URL
+        model_var: DEFAULT_MODELS
+
+models:
+  llm:
+    model: ai/qwen3:0.6B-Q4_K_M
+
+volumes:
+  open-webui:
+</pre>
+</div>
+
+<div class="code" data-lang="bash">
+<pre>
+$ cd ../openwebui
+$ docker compose up -d
+</pre>
+</div>
+
+<p>
+  Open WebUI 镜像接近 6GB，首次拉取可能要一阵子；第一次启动时它还要在后台下载一些文件，这时访问可能会看到 <code>500: Internal Error</code>，等一会儿即可。
+  然后打开 <code>http://localhost:3001</code>：
+</p>
+<ul>
+  <li>用左上角的<strong>模型选择器</strong>在 DMR 已下载的模型之间切换；</li>
+  <li>点击左下角用户 → <strong>Settings → General</strong>，设置一个 <strong>system prompt</strong>，比如 “Give simple answers. Limit responses to two sentences.”，让回答更符合你的需要；</li>
+  <li>提问“月亮离地球多远？”，接着问“那太阳呢？”—— 它能理解第二个问题是承接上一个的。对话会保存在左侧导航栏里。</li>
+</ul>
+
+<h2 id="containers">把模型放进容器（不推荐）</h2>
+
+<p>
+  把模型服务放在容器里运行<strong>已经不推荐了</strong>，这里只做简单介绍。前面说过，容器里只能访问装了 NVIDIA Container Toolkit 的 CUDA GPU；
+  如果宿主机是其他厂商的 GPU、NPU、TPU，容器里的模型只能慢吞吞地跑在 CPU 上。
+</p>
+<p>
+  作者仓库的 <code>ai-compose</code> 目录有一个类似的三层聊天应用，只是把 DMR 换成了一个容器化的 Ollama 服务（<code>compose.yaml</code> 用 CPU，<code>gpu-compose.yaml</code> 用 NVIDIA GPU）：
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+  ollama:
+    image: nigelpoulton/gsd-book:chat-model
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - MODEL=${MODEL:-mistral:latest}
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+</pre>
+</div>
+
+<p>它同样映射 3000 端口，会和前面的聊天应用冲突。如果真想运行，先修改端口。</p>
+
+<h2 id="cleanup">清理</h2>
+
+<div class="code" data-lang="bash">
+<pre>
+# 在 openwebui 目录：删除 Open WebUI 应用及其镜像、网络和卷（不会停用 DMR，也不会删模型）
+$ docker compose down --rmi all --volumes
+
+# 在 dmr 目录：删除聊天应用
+$ docker compose down --rmi all --volumes
+
+# 删除模型
+$ docker model rm ai/qwen3:0.6B-Q4_K_M ai/gemma3:4B-Q4_K_M
+</pre>
+</div>
+
+<p>要彻底停用 DMR，在 Docker Desktop 的 Settings → AI 中取消勾选 <em>Enable Docker Model Runner</em>。</p>
+
+<h2 id="commands">命令速查</h2>
+
+<div class="tw"><table class="cheat">
+  <tr><th>命令</th><th>作用</th></tr>
+  <tr><td><code>docker model status</code></td><td>DMR 是否运行、使用哪个推理后端</td></tr>
+  <tr><td><code>docker model pull &lt;模型&gt;</code></td><td>从 Docker Hub 或其他 OCI 仓库拉取模型</td></tr>
+  <tr><td><code>docker model ls</code></td><td>列出本地模型</td></tr>
+  <tr><td><code>docker model inspect &lt;模型&gt;</code></td><td>查看格式、架构、量化、参数量等详情</td></tr>
+  <tr><td><code>docker model run &lt;模型&gt; ["提示词"]</code></td><td>一次性提问，或进入交互式聊天</td></tr>
+  <tr><td><code>docker model configure --context-size N &lt;模型&gt;</code></td><td>调整模型运行参数</td></tr>
+  <tr><td><code>docker model package</code> / <code>push</code></td><td>把 GGUF 等文件打包成 OCI 模型制品 / 推送到仓库</td></tr>
+  <tr><td><code>docker model logs</code></td><td>查看 DMR 日志</td></tr>
+  <tr><td><code>docker model rm &lt;模型&gt;</code></td><td>删除本地模型</td></tr>
+</table></div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>Docker Model Runner 是用 Docker 运行本地 AI 模型的推荐方式：模型在容器之外、直接在宿主机硬件上执行，能用上更多种类的 AI 加速硬件。</li>
+  <li>DMR 按需加载和卸载模型，通过 OpenAI / Anthropic / Ollama 兼容端点提供服务，推理后端可插拔（llama.cpp、vLLM、Diffusers）。</li>
+  <li>模型以 OCI 制品的形式存储和分发，可以复用现有的镜像仓库。</li>
+  <li>DMR 与 Docker CLI、Docker Hub、Compose 深度集成：用顶层 <code>models:</code> 声明模型，Compose 会把地址和模型名注入到服务的环境变量里。</li>
+  <li>仍然可以在容器里跑 Ollama 等模型服务，但通常更慢，能用的加速硬件也更少。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>拉取 <code>ai/smollm2</code>，用 <code>docker model run</code> 问它几个问题；再用 curl 调用 <code>/engines/v1/chat/completions</code>，对比 <code>temperature</code> 为 0 和 1 时回答的差异。</li>
+    <li>用任意语言的 OpenAI SDK 写一个十几行的小程序，把 <code>base_url</code> 设为 <code>http://localhost:12434/engines/v1</code>，调用本地模型。</li>
+    <li>把作者仓库里的 <code>dmr/compose.yaml</code> 改写成本章的 <code>models:</code> 新语法并部署；进入 backend 容器执行 <code>env | grep MODEL</code>，看看注入了哪些变量。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

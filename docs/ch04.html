@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 4 章 · 第一次上手 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="4">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 4 章</span>
+<h1>第一次上手</h1>
+<p class="lede">
+  理论讲够了，动手吧！本章分两部分：<strong>运维视角</strong>——拉取镜像、启动容器、进入容器、删除容器；
+  <strong>开发视角</strong>——拿到一份源代码，把它构建成镜像，再作为容器运行。两部分都走一遍，你就是半个 DevOps 了。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>用 <code>docker pull</code> 下载镜像，用 <code>docker images</code> 查看本地镜像</li>
+    <li>看懂 <code>docker run -d -p --name</code> 每个参数的含义</li>
+    <li>用 <code>docker exec</code> 进入运行中的容器执行命令</li>
+    <li>用 <code>docker stop</code> / <code>docker rm</code> 停止并删除容器</li>
+    <li>用 Dockerfile + <code>docker build</code> 把一个 Node.js 应用容器化并运行</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="ops">运维视角：运行一个现成的应用</h2>
+
+<p>这一部分你将完成：检查 Docker 是否正常 → 下载镜像 → 从镜像启动容器 → 在容器里执行命令 → 删除容器。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 130" role="img" aria-label="运维视角的五个步骤">
+  <rect class="bx" x="10"  y="30" width="136" height="64" rx="10"/><text class="ttl" x="78"  y="56" text-anchor="middle">① 检查</text><text class="mono" x="78"  y="78" text-anchor="middle">docker version</text>
+  <rect class="bx-b" x="162" y="30" width="136" height="64" rx="10"/><text class="ttl on-b" x="230" y="56" text-anchor="middle">② 拉取</text><text class="mono" x="230" y="78" text-anchor="middle">docker pull</text>
+  <rect class="bx-a" x="314" y="30" width="136" height="64" rx="10"/><text class="ttl on-a" x="382" y="56" text-anchor="middle">③ 运行</text><text class="mono" x="382" y="78" text-anchor="middle">docker run</text>
+  <rect class="bx-g" x="466" y="30" width="136" height="64" rx="10"/><text class="ttl on-g" x="534" y="56" text-anchor="middle">④ 进入</text><text class="mono" x="534" y="78" text-anchor="middle">docker exec</text>
+  <rect class="bx-r" x="618" y="30" width="136" height="64" rx="10"/><text class="ttl on-r" x="686" y="56" text-anchor="middle">⑤ 删除</text><text class="mono" x="686" y="78" text-anchor="middle">stop / rm</text>
+  <path class="ln" d="M148 62 H158" marker-end="url(#ar)"/>
+  <path class="ln" d="M300 62 H310" marker-end="url(#ar)"/>
+  <path class="ln" d="M452 62 H462" marker-end="url(#ar)"/>
+  <path class="ln" d="M604 62 H614" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 4-1　运维视角：一个容器的完整一生</figcaption>
+</figure>
+
+<h3>① 检查 Docker 是否正常</h3>
+
+<p>一次典型的 Docker 安装会把客户端和引擎装在同一台机器上，并配置好它们之间的通信。运行 <code>docker version</code>：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker version
+Client:
+ Version:           29.8.0            &lt;&lt;--- 客户端信息
+ OS/Arch:           darwin/arm64
+ &lt;Snip&gt;
+Server: Docker Desktop 4.92.0         &lt;&lt;--- 服务端（引擎）信息
+ Engine:
+  Version:          29.8.0
+  OS/Arch:          linux/arm64
+ &lt;Snip&gt;
+</pre>
+</div>
+
+<p>
+  Client 和 Server 都有输出，说明一切正常。如果你在 Linux 上看到 <code>permission denied while trying to connect to the Docker daemon...</code>，
+  就在命令前加 <code>sudo</code> 再试（或者参考第 3 章把自己加入 <code>docker</code> 组）。
+</p>
+
+<h3>② 下载一个镜像</h3>
+
+<p>
+  <strong>镜像</strong>是包含了运行一个应用所需一切的对象：一个精简的操作系统文件系统、应用本身、以及所有依赖。
+  如果你做运维，可以把它想成<strong>虚拟机模板</strong>；如果你是开发者，可以把它想成<strong>类（class）</strong>。
+</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker images
+REPOSITORY   TAG   IMAGE ID   CREATED   SIZE
+</pre>
+</div>
+
+<p>全新安装的 Docker 一个镜像都没有。把镜像复制到本机叫做<strong>拉取（pull）</strong>。拉取最新的 NGINX Web 服务器镜像：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker pull nginx:latest
+latest: Pulling from library/nginx
+ad5932596f78: Download complete
+e4bc5c1a6721: Download complete
+1bd52ec2c0cb: Download complete
+&lt;Snip&gt;
+Digest: sha256:fb197595ebe76b9c0c14ab68159fd3c08bd067ec62300583543f0ebda353b5be
+Status: Downloaded newer image for nginx:latest
+docker.io/library/nginx:latest
+
+$ docker images
+REPOSITORY   TAG      IMAGE ID       CREATED       SIZE
+nginx        latest   fb197595ebe7   10 days ago   280MB
+</pre>
+</div>
+
+<p>
+  镜像存在哪、里面有什么，第 6 章会细讲。现在只需知道：这个 NGINX 镜像里有一个精简版 Linux 和 NGINX Web 服务器程序。
+  那几行 <code>Download complete</code> 各对应一个<strong>镜像层</strong>，这也是第 6 章的重点。
+</p>
+
+<h3>③ 从镜像启动一个容器</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker run --name test -d -p 8080:80 nginx:latest
+e08c3535...30557225
+</pre>
+</div>
+
+<p>返回的一长串字符是新容器的 ID，说明容器创建成功了。这条命令是整本教程最重要的命令，我们把它拆开看：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="docker run 命令各参数的含义">
+  <rect class="bx-d" x="20" y="24" width="720" height="50" rx="10"/>
+  <text class="mono" x="60"  y="55" style="font-size:17px">docker run</text>
+  <text class="mono" x="205" y="55" style="font-size:17px">--name test</text>
+  <text class="mono" x="345" y="55" style="font-size:17px">-d</text>
+  <text class="mono" x="400" y="55" style="font-size:17px">-p 8080:80</text>
+  <text class="mono" x="545" y="55" style="font-size:17px">nginx:latest</text>
+
+  <path class="ln-a" d="M110 76 V120" marker-end="url(#ar-a)"/>
+  <path class="ln-b" d="M260 76 V186" marker-end="url(#ar-b)"/>
+  <path class="ln-g" d="M353 76 V120" marker-end="url(#ar-g)"/>
+  <path class="ln-p" d="M450 76 V186" marker-end="url(#ar-p)"/>
+  <path class="ln-a" d="M608 76 V120" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-a" x="30" y="124" width="160" height="50" rx="8"/>
+  <text class="ttl on-a" x="110" y="146" text-anchor="middle">启动新容器</text>
+  <text class="sm" x="110" y="164" text-anchor="middle">create + start</text>
+
+  <rect class="bx-g" x="290" y="124" width="126" height="50" rx="8"/>
+  <text class="ttl on-g" x="353" y="146" text-anchor="middle">后台运行</text>
+  <text class="sm" x="353" y="164" text-anchor="middle">detached，不占终端</text>
+
+  <rect class="bx-a" x="540" y="124" width="190" height="50" rx="8"/>
+  <text class="ttl on-a" x="635" y="146" text-anchor="middle">基于哪个镜像</text>
+  <text class="sm" x="635" y="164" text-anchor="middle">仓库名:标签</text>
+
+  <rect class="bx-b" x="170" y="190" width="180" height="50" rx="8"/>
+  <text class="ttl on-b" x="260" y="212" text-anchor="middle">给容器起名 test</text>
+  <text class="sm" x="260" y="230" text-anchor="middle">不起名则随机生成</text>
+
+  <rect class="bx-p" x="370" y="190" width="200" height="50" rx="8"/>
+  <text class="ttl on-p" x="470" y="212" text-anchor="middle">端口映射 主机:容器</text>
+  <text class="sm" x="470" y="230" text-anchor="middle">主机 8080 → 容器 80</text>
+</svg>
+<figcaption>图 4-2　拆解 docker run</figcaption>
+</figure>
+
+<p>其中 <code>-p 8080:80</code> 最容易搞混方向，记住口诀：<strong>“左主右容”</strong> —— 冒号左边是宿主机端口，右边是容器内端口。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="端口映射：浏览器访问主机 8080 端口被转发到容器 80 端口">
+  <rect class="bx-b" x="20" y="70" width="140" height="70" rx="10"/>
+  <text class="ttl on-b" x="90" y="98" text-anchor="middle">浏览器</text>
+  <text class="mono" x="90" y="120" text-anchor="middle">localhost:8080</text>
+
+  <rect class="bx" x="220" y="20" width="520" height="170" rx="14"/>
+  <text class="ttl" x="240" y="44">Docker 主机</text>
+  <rect class="bx-p" x="240" y="84" width="110" height="42" rx="8"/>
+  <text class="mono on-p" x="295" y="110" text-anchor="middle">:8080</text>
+  <text class="sm" x="295" y="146" text-anchor="middle">主机端口</text>
+
+  <rect class="bx-a" x="440" y="56" width="280" height="110" rx="12"/>
+  <text class="ttl on-a" x="580" y="80" text-anchor="middle">容器 test</text>
+  <rect class="bx-g" x="460" y="96" width="100" height="42" rx="8"/>
+  <text class="mono on-g" x="510" y="122" text-anchor="middle">:80</text>
+  <text class="sm" x="640" y="114" text-anchor="middle">NGINX 在</text>
+  <text class="sm" x="640" y="130" text-anchor="middle">80 端口监听</text>
+
+  <path class="ln-a" d="M162 105 H236" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M352 105 H456" marker-end="url(#ar-a)"/>
+  <text class="sm" x="404" y="96" text-anchor="middle">转发</text>
+</svg>
+<figcaption>图 4-3　端口映射 -p 8080:80：“左主右容”</figcaption>
+</figure>
+
+<p>现在打开浏览器访问 <code>http://localhost:8080</code>，你会看到 <em>Welcome to nginx!</em>。再用 <code>docker ps</code> 看看正在运行的容器：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker ps
+CONTAINER ID   IMAGE          COMMAND                  CREATED      STATUS      PORTS                  NAMES
+e08c35352ff3   nginx:latest   "/docker-entrypoint.…"   3 mins ago   Up 2 mins   0.0.0.0:8080->80/tcp   test
+</pre>
+</div>
+
+<p>
+  <code>CONTAINER ID</code> 就是刚才那一长串 ID 的前 12 位；<code>IMAGE</code>、<code>PORTS</code>、<code>NAMES</code> 都和 <code>docker run</code> 里的参数一一对应；
+  <code>COMMAND</code> 是 Docker 在容器里启动 NGINX 所执行的命令。
+</p>
+
+<h3>④ 在容器里执行命令</h3>
+
+<p>用 <code>docker exec</code> 在容器里启动一个新的 Bash 进程，并把你的终端连上去：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker exec -it test bash
+root@e08c35352ff3:/# ls -l
+total 64
+lrwxrwxrwx   1 root root    7 Jan  2 00:00 bin -> usr/bin
+drwxr-xr-x   2 root root 4096 Oct 31 11:04 boot
+drwxr-xr-x   5 root root  340 Jan 12 15:09 dev
+-rwxr-xr-x   1 root root 1620 Jan  3 02:56 docker-entrypoint.sh
+drwxr-xr-x   1 root root 4096 Jan 12 15:09 etc
+&lt;Snip&gt;
+root@e08c35352ff3:/# ps -elf
+bash: ps: command not found
+</pre>
+</div>
+
+<p>
+  提示符变成了 <code>root@e08c35352ff3:/#</code>，说明你已经“在容器里”了。<code>ls</code> 能看到熟悉的 Linux 目录结构，
+  但 <code>ps</code> 命令竟然不存在！这是有意为之：<strong>大多数镜像只包含运行应用必需的程序</strong>，
+  这样镜像更小、攻击面更少。第 7 章会教你用 Docker Debug 在这种“什么工具都没有”的容器里排查问题。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="docker exec 在容器中启动新进程">
+  <rect class="bx-b" x="20" y="50" width="160" height="70" rx="10"/>
+  <text class="ttl on-b" x="100" y="78" text-anchor="middle">你的终端</text>
+  <text class="mono" x="100" y="100" text-anchor="middle">docker exec -it</text>
+  <path class="ln-a" d="M182 85 H300" marker-end="url(#ar-a)"/>
+  <text class="sm" x="241" y="76" text-anchor="middle">-i 交互 -t 终端</text>
+  <rect class="bx-a" x="305" y="20" width="435" height="130" rx="12"/>
+  <text class="ttl on-a" x="325" y="44">容器 test</text>
+  <rect class="bx-g" x="325" y="60" width="190" height="70" rx="8"/>
+  <text class="ttl on-g" x="420" y="88" text-anchor="middle">PID 1 · nginx</text>
+  <text class="sm" x="420" y="110" text-anchor="middle">容器的主进程（一直在跑）</text>
+  <rect class="bx-p" x="530" y="60" width="190" height="70" rx="8"/>
+  <text class="ttl on-p" x="625" y="88" text-anchor="middle">新进程 · bash</text>
+  <text class="sm" x="625" y="110" text-anchor="middle">exit 后这个进程就结束</text>
+</svg>
+<figcaption>图 4-4　docker exec 是在容器里“多开”一个进程，不影响主进程</figcaption>
+</figure>
+
+<p>输入 <code>exit</code> 退出 Bash 进程，回到你本地的终端。再运行 <code>docker ps</code>，容器依然在运行 —— 因为你退出的只是 bash，不是 nginx 主进程。</p>
+
+<h3>⑤ 停止并删除容器</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker stop test      # 优雅停止，可能需要几秒
+test
+$ docker rm test        # 删除
+test
+$ docker ps -a          # -a 显示所有容器，包括已停止的
+CONTAINER ID   IMAGE   COMMAND   CREATED   STATUS   PORTS   NAMES
+</pre>
+</div>
+
+<p>恭喜！你已经完成了拉取镜像 → 启动容器 → 进入容器执行命令 → 停止并删除容器的完整流程。</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 新旧两套命令写法</div>
+  <p>
+    Docker 的命令有两种写法：老的“短命令”如 <code>docker ps</code>、<code>docker images</code>、<code>docker rmi</code>，
+    和新的“管理命令”如 <code>docker container ls</code>、<code>docker image ls</code>、<code>docker image rm</code>。两者完全等价。
+    本教程主要用更常见的短命令，但你在官方文档里会经常看到管理命令。
+  </p>
+</div>
+
+<h2 id="dev">开发视角：把代码变成容器</h2>
+
+<p>容器的一切都是为了应用。这一部分你将：从 GitHub 克隆一个应用 → 查看它的 Dockerfile → 把它容器化 → 作为容器运行。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="开发视角：源码加 Dockerfile 构建出镜像，再运行为容器">
+  <rect class="bx" x="20" y="30" width="150" height="46" rx="8"/>
+  <text class="lbl" x="95" y="58" text-anchor="middle">源代码 app.js …</text>
+  <rect class="bx-p" x="20" y="90" width="150" height="46" rx="8"/>
+  <text class="lbl on-p" x="95" y="118" text-anchor="middle">Dockerfile</text>
+  <path class="ln" d="M172 53 L240 80" marker-end="url(#ar)"/>
+  <path class="ln" d="M172 113 L240 90" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="245" y="55" width="150" height="60" rx="10"/>
+  <text class="ttl on-b" x="320" y="80" text-anchor="middle">docker build</text>
+  <text class="sm" x="320" y="100" text-anchor="middle">按指令一步步构建</text>
+  <path class="ln-a" d="M397 85 H445" marker-end="url(#ar-a)"/>
+  <rect class="bx-a" x="450" y="55" width="130" height="60" rx="10"/>
+  <text class="ttl on-a" x="515" y="80" text-anchor="middle">镜像</text>
+  <text class="mono" x="515" y="100" text-anchor="middle">test:latest</text>
+  <path class="ln-g" d="M582 85 H620" marker-end="url(#ar-g)"/>
+  <rect class="bx-g" x="625" y="55" width="115" height="60" rx="10"/>
+  <text class="ttl on-g" x="682" y="80" text-anchor="middle">容器</text>
+  <text class="mono" x="682" y="100" text-anchor="middle">web1</text>
+  <text class="lbl" x="380" y="158" text-anchor="middle">这个过程叫“容器化”（containerize）</text>
+</svg>
+<figcaption>图 4-5　开发视角：从代码到容器</figcaption>
+</figure>
+
+<h3>克隆应用代码</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+$ git clone https://github.com/nigelpoulton/psweb.git
+Cloning into 'psweb'...
+&lt;Snip&gt;
+$ cd psweb
+$ ls -l
+-rw-r--r--  1 nigel  staff  324  Dockerfile
+-rw-r--r--  1 nigel  staff  378  README.md
+-rw-r--r--  1 nigel  staff  341  app.js
+-rw-r--r--  1 nigel  staff  355  package.json
+drwxr-xr-x  3 nigel  staff   96  views
+</pre>
+</div>
+
+<p>这是一个很简单的 Node.js Web 应用，提供一个静态 HTML 页面。</p>
+
+<h3>查看 Dockerfile</h3>
+
+<p><strong>Dockerfile</strong> 是一个纯文本文件，告诉 Docker 如何把应用和依赖构建成镜像。</p>
+
+<div class="code" data-lang="dockerfile" data-file="psweb/Dockerfile">
+<pre>
+FROM alpine
+LABEL maintainer="nigelpoulton@hotmail.com"
+RUN apk add --update nodejs npm curl
+COPY . /src
+WORKDIR /src
+RUN npm install
+EXPOSE 8080
+ENTRYPOINT ["node", "./app.js"]
+</pre>
+</div>
+
+<p>第 8 章会逐条详解。现在你只需知道每一行都是 Docker 构建镜像时要执行的一条<strong>指令</strong>，大意是：</p>
+
+<div class="tw"><table>
+  <tr><th>指令</th><th>通俗解释</th></tr>
+  <tr><td><code>FROM alpine</code></td><td>以 Alpine Linux（一个只有几 MB 的精简发行版）为基础</td></tr>
+  <tr><td><code>LABEL ...</code></td><td>贴个标签，记录维护者（只是元数据）</td></tr>
+  <tr><td><code>RUN apk add ...</code></td><td>在镜像里安装 Node.js、npm 和 curl</td></tr>
+  <tr><td><code>COPY . /src</code></td><td>把当前目录的代码复制到镜像的 <code>/src</code></td></tr>
+  <tr><td><code>WORKDIR /src</code></td><td>后续指令都在 <code>/src</code> 目录下执行</td></tr>
+  <tr><td><code>RUN npm install</code></td><td>安装应用依赖</td></tr>
+  <tr><td><code>EXPOSE 8080</code></td><td>声明应用监听 8080 端口（文档作用）</td></tr>
+  <tr><td><code>ENTRYPOINT [...]</code></td><td>容器启动时执行 <code>node ./app.js</code></td></tr>
+</table></div>
+
+<h3>容器化应用</h3>
+
+<p>在 <code>psweb</code> 目录里运行下面的命令，<strong>别漏了最后那个点</strong> —— 它表示“用当前目录作为构建上下文”：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker build -t test:latest .
+[+] Building 36.2s (11/11) FINISHED
+ => [internal] load build definition from Dockerfile            0.0s
+ => [internal] load .dockerignore                               0.0s
+ &lt;Snip&gt;
+ => => naming to docker.io/library/test:latest                  0.0s
+
+$ docker images
+REPOSITORY   TAG      IMAGE ID       CREATED          SIZE
+test         latest   0435f2738cf6   21 seconds ago   160MB
+</pre>
+</div>
+
+<p>恭喜，你已经把应用<strong>容器化</strong>了 —— 这是行话，意思就是把应用和所有依赖构建成一个容器镜像。</p>
+
+<h3>作为容器运行</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker run -d \
+  --name web1 \
+  --publish 8080:8080 \
+  test:latest
+</pre>
+</div>
+
+<p>
+  <code>--publish</code> 是 <code>-p</code> 的完整写法。在浏览器打开 <code>http://localhost:8080</code>（如果用 Multipass，换成虚拟机的 192.168.x.x 地址），
+  就能看到这个应用的页面了。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; Windows 用户注意</div>
+  <p>上面的反斜杠 <code>\</code> 是 Linux/macOS shell 的续行符。PowerShell 里要换成反引号 <code>`</code>，或者干脆写成一行。</p>
+</div>
+
+<h3>清理</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker rm web1 -f          # -f 强制删除运行中的容器（跳过 stop）
+web1
+$ docker rmi test:latest     # rmi = remove image
+Untagged: test:latest
+Deleted: sha256:0435f27...cac8e2b
+</pre>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 150" role="img" aria-label="本章用到的命令关系图">
+  <rect class="bx-p" x="20" y="50" width="120" height="50" rx="8"/><text class="ttl on-p" x="80" y="80" text-anchor="middle">Dockerfile</text>
+  <rect class="bx-a" x="260" y="50" width="120" height="50" rx="8"/><text class="ttl on-a" x="320" y="80" text-anchor="middle">镜像</text>
+  <rect class="bx-g" x="500" y="50" width="120" height="50" rx="8"/><text class="ttl on-g" x="560" y="80" text-anchor="middle">容器</text>
+  <rect class="bx-b" x="260" y="0" width="120" height="30" rx="6"/><text class="sm on-b" x="320" y="20" text-anchor="middle">Docker Hub</text>
+  <path class="ln-a" d="M142 75 H256" marker-end="url(#ar-a)"/><text class="mono" x="199" y="68" text-anchor="middle">build</text>
+  <path class="ln-a" d="M382 75 H496" marker-end="url(#ar-a)"/><text class="mono" x="439" y="68" text-anchor="middle">run</text>
+  <path class="ln-b" d="M320 32 V46" marker-end="url(#ar-b)"/><text class="mono" x="350" y="43">pull</text>
+  <path class="ln-r" d="M622 75 H700" marker-end="url(#ar-r)"/><text class="mono" x="661" y="68" text-anchor="middle">rm</text>
+  <rect class="bx-d" x="490" y="112" width="140" height="30" rx="6"/>
+  <text class="mono" x="560" y="132" text-anchor="middle">exec / stop / ps</text>
+  <path class="ln-r" d="M280 102 L230 124" marker-end="url(#ar-r)"/>
+  <text class="mono" x="205" y="140" text-anchor="middle">rmi</text>
+</svg>
+<figcaption>图 4-6　本章命令一览</figcaption>
+</figure>
+
+<ul>
+  <li><strong>运维视角：</strong>你拉取了镜像、从它启动了容器、进入容器执行了命令，最后停止并删除了容器。</li>
+  <li><strong>开发视角：</strong>你从 GitHub 拿到源码，用 Dockerfile 里的指令把它构建成镜像，再作为容器运行。</li>
+  <li><code>-p 主机端口:容器端口</code>，“左主右容”。</li>
+  <li>镜像通常只包含运行应用所必需的东西，所以很多常用命令在容器里不存在是正常的。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>用 <code>docker run -d -p 9090:80 --name web2 nginx</code> 再启动一个 NGINX，在浏览器访问 9090 端口。如果把命令里的 <code>9090:80</code> 写反成 <code>80:9090</code> 会怎样？</li>
+    <li>同时运行 <code>test</code> 和 <code>web2</code> 两个 NGINX 容器，它们能不能都映射到主机的 8080 端口？为什么？</li>
+    <li>在 <code>psweb</code> 目录里修改 <code>views/home.pug</code> 中的文字，重新 <code>docker build</code> 并运行，观察页面变化。注意第二次构建速度，第 8 章会解释为什么变快了。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

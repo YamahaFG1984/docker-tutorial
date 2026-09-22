@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 5 章 · Docker 引擎 — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="5">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 5 章</span>
+<h1>Docker 引擎</h1>
+<p class="lede">
+  当你敲下 <code>docker run</code> 时，幕后到底发生了什么？本章打开引擎盖，看看 Docker 引擎由哪些零件组成、它们如何协作把一个容器“造”出来。
+  不懂这些也能用 Docker，但想真正掌握它，这一章绕不过去。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>说出 Docker 引擎的主要组件：dockerd、containerd、shim、runc</li>
+    <li>理解 Docker 为什么从一个“大单体”拆成许多小组件</li>
+    <li>完整追踪一次 <code>docker run</code> 从 CLI 到内核的全过程</li>
+    <li>理解 shim 的作用和“无守护进程容器”的含义</li>
+    <li>知道这些组件在 Linux 上对应哪些可执行文件</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="tldr">一句话概括</h2>
+
+<p>
+  <strong>Docker 引擎</strong>是 Docker 服务端所有组件的统称，负责运行和管理容器。如果你用过 VMware，Docker 引擎的地位类似于 ESXi。
+</p>
+<p>Docker 引擎是模块化的，由许多来自 OCI、CNCF、Moby 的小而专的组件拼成。它很像一台汽车发动机：</p>
+
+<div class="vs">
+  <div class="old"><div class="h">汽车发动机</div><div style="padding:10px 14px">由进气歧管、节气门、气缸、活塞、火花塞、排气歧管等专门零件组成，协同工作让汽车跑起来。</div></div>
+  <div class="new"><div class="h">Docker 引擎</div><div style="padding:10px 14px">由 API、镜像构建器、高层运行时、低层运行时、shim 等专门工具组成，协同工作来创建和运行容器。</div></div>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="Docker 引擎中负责运行容器的组件">
+  <rect class="bx-b" x="250" y="14" width="260" height="44" rx="10"/>
+  <text class="ttl on-b" x="380" y="41" text-anchor="middle">Docker CLI（客户端）</text>
+  <path class="ln-b" d="M380 60 V80" marker-end="url(#ar-b)"/>
+  <text class="sm" x="392" y="76">REST API</text>
+
+  <rect class="bx" x="20" y="84" width="720" height="236" rx="14"/>
+  <text class="ttl" x="40" y="108">Docker 引擎</text>
+
+  <rect class="bx-a" x="210" y="96" width="340" height="50" rx="10"/>
+  <text class="ttl on-a" x="380" y="118" text-anchor="middle">dockerd（Docker 守护进程）</text>
+  <text class="sm" x="380" y="136" text-anchor="middle">提供 Docker API · 构建 · 网络 · 卷</text>
+  <path class="ln" d="M380 148 V168" marker-end="url(#ar)"/>
+  <text class="sm" x="392" y="164">gRPC</text>
+
+  <rect class="bx-g" x="210" y="172" width="340" height="50" rx="10"/>
+  <text class="ttl on-g" x="380" y="194" text-anchor="middle">containerd（高层运行时）</text>
+  <text class="sm" x="380" y="212" text-anchor="middle">管理容器生命周期 · 镜像存储</text>
+
+  <path class="ln" d="M290 224 L170 250" marker-end="url(#ar)"/>
+  <path class="ln" d="M380 224 V250" marker-end="url(#ar)"/>
+  <path class="ln" d="M470 224 L590 250" marker-end="url(#ar)"/>
+
+  <rect class="bx-p" x="90"  y="254" width="160" height="26" rx="6"/><text class="sm on-p" x="170" y="272" text-anchor="middle">shim</text>
+  <rect class="bx-p" x="300" y="254" width="160" height="26" rx="6"/><text class="sm on-p" x="380" y="272" text-anchor="middle">shim</text>
+  <rect class="bx-p" x="510" y="254" width="160" height="26" rx="6"/><text class="sm on-p" x="590" y="272" text-anchor="middle">shim</text>
+  <rect class="bx-r" x="90"  y="284" width="160" height="26" rx="6"/><text class="sm on-r" x="170" y="302" text-anchor="middle">runc → 容器 1</text>
+  <rect class="bx-r" x="300" y="284" width="160" height="26" rx="6"/><text class="sm on-r" x="380" y="302" text-anchor="middle">runc → 容器 2</text>
+  <rect class="bx-r" x="510" y="284" width="160" height="26" rx="6"/><text class="sm on-r" x="590" y="302" text-anchor="middle">runc → 容器 3</text>
+</svg>
+<figcaption>图 5-1　Docker 引擎中负责创建和运行容器的组件（还有其他组件，这里只画与运行容器相关的）</figcaption>
+</figure>
+
+<div class="box note">
+  <div class="t">&#9432; 大小写约定</div>
+  <p>runc 和 containerd 在官方文档中总是全小写，本教程也遵循这个约定，即使它们出现在句首。</p>
+</div>
+
+<h2 id="history">引擎的演化史</h2>
+
+<p>Docker 刚发布时，引擎只有两个主要组件：</p>
+<ul>
+  <li><strong>Docker 守护进程</strong>（daemon）：一个巨大的单体程序，API、镜像构建、容器执行、卷、网络……所有代码都在里面。</li>
+  <li><strong>LXC</strong>：负责和 Linux 内核打交道，创建容器所需的命名空间和 cgroups。</li>
+</ul>
+
+<h3>替换 LXC</h3>
+<p>依赖 LXC 给 Docker 带来了两个问题：第一，LXC 只能用于 Linux，而 Docker 想跨平台；第二，Docker 发展太快，没法保证 LXC 按 Docker 需要的方向演进。</p>
+<p>于是 Docker 开发了自己的工具 <strong>libcontainer</strong> 来替代 LXC —— 一个平台无关的库，让 Docker 直接调用宿主机内核里的容器基础能力。这件事很早就完成了。</p>
+
+<h3>拆分单体守护进程</h3>
+<p>随着时间推移，把几乎所有功能都塞进一个守护进程的做法越来越成问题：</p>
+<ol>
+  <li>它变得越来越慢；</li>
+  <li>这不是生态想要的 —— 其他平台想复用 Docker 的某部分能力，却只能整个拿走；</li>
+  <li>单体软件很难创新。</li>
+</ol>
+<p>
+  Docker 于是启动了一个长期的拆分计划：把每个功能都重构成独立的小工具，让其他平台也能复用它们。
+  最典型的成果就是把高层和低层运行时功能拆成了 <strong>containerd</strong> 和 <strong>runc</strong> ——
+  如今它们被 Docker、Kubernetes、Firecracker、AWS Fargate 等无数项目使用。
+  后来，Docker 连<strong>镜像管理</strong>也交给了 containerd。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="Docker 引擎从单体到模块化的演化">
+  <text class="ttl" x="120" y="24" text-anchor="middle">早期：单体</text>
+  <rect class="bx-r" x="30" y="40" width="180" height="120" rx="12"/>
+  <text class="ttl on-r" x="120" y="64" text-anchor="middle">Docker daemon</text>
+  <text class="sm" x="120" y="86" text-anchor="middle">API · 构建 · 镜像</text>
+  <text class="sm" x="120" y="102" text-anchor="middle">容器执行 · 网络 · 卷</text>
+  <text class="sm" x="120" y="118" text-anchor="middle">……全在一起</text>
+  <rect class="bx-d" x="50" y="128" width="140" height="24" rx="5"/><text class="sm" x="120" y="145" text-anchor="middle">LXC</text>
+
+  <path class="ln-a" d="M225 100 H290" marker-end="url(#ar-a)"/>
+  <text class="sm" x="257" y="90" text-anchor="middle">逐步拆分</text>
+
+  <text class="ttl" x="520" y="24" text-anchor="middle">今天：模块化</text>
+  <rect class="bx-a" x="305" y="40" width="130" height="50" rx="8"/><text class="ttl on-a" x="370" y="62" text-anchor="middle">dockerd</text><text class="sm" x="370" y="80" text-anchor="middle">API</text>
+  <rect class="bx-b" x="445" y="40" width="130" height="50" rx="8"/><text class="ttl on-b" x="510" y="62" text-anchor="middle">BuildKit</text><text class="sm" x="510" y="80" text-anchor="middle">构建</text>
+  <rect class="bx-b" x="585" y="40" width="150" height="50" rx="8"/><text class="ttl on-b" x="660" y="62" text-anchor="middle">libnetwork</text><text class="sm" x="660" y="80" text-anchor="middle">网络</text>
+  <rect class="bx-g" x="305" y="100" width="200" height="50" rx="8"/><text class="ttl on-g" x="405" y="122" text-anchor="middle">containerd</text><text class="sm" x="405" y="140" text-anchor="middle">生命周期 · 镜像</text>
+  <rect class="bx-p" x="515" y="100" width="100" height="50" rx="8"/><text class="ttl on-p" x="565" y="130" text-anchor="middle">shim</text>
+  <rect class="bx-r" x="625" y="100" width="110" height="50" rx="8"/><text class="ttl on-r" x="680" y="122" text-anchor="middle">runc</text><text class="sm" x="680" y="140" text-anchor="middle">libcontainer</text>
+
+  <text class="lbl" x="380" y="195" text-anchor="middle">每个组件都小而专，可以单独升级、单独被其他项目复用</text>
+</svg>
+<figcaption>图 5-2　从单体到模块化</figcaption>
+</figure>
+
+<h2 id="oci">OCI 的影响</h2>
+
+<p>
+  就在 Docker 重构引擎的同时，OCI 正在制定两个容器标准：<strong>镜像规范</strong>和<strong>运行时规范</strong>。
+  两者都在 2017 年 7 月发布了 1.0 版本，后来又增加了第三个<strong>分发规范</strong>（管理镜像仓库如何分发镜像）。
+</p>
+<p>
+  自 2016 年以来的所有 Docker 版本都实现了 OCI 规范：用 <strong>runc</strong>（runtime-spec 的参考实现）创建符合 OCI 的容器；
+  用 <strong>BuildKit</strong> 构建符合 OCI 的镜像；<strong>Docker Hub</strong> 是符合 OCI 的镜像仓库。
+</p>
+
+<h2 id="runc">runc：低层运行时</h2>
+
+<p>
+  <strong>runc</strong>（读作 “run see”）是 OCI 运行时规范的参考实现。Docker 公司深度参与了这个规范的制定，并贡献了 runc 的最初代码。
+</p>
+<p>
+  runc 本质上是 libcontainer 的一个轻量命令行包装。你可以单独下载它来管理 OCI 容器，但它非常底层，几乎没有 Docker 引擎那些丰富的功能。
+  好在 Docker 把 runc 作为自己的低层运行时，这样你既得到了符合 OCI 标准的容器，又享受到了 Docker 的易用体验。
+</p>
+<p>行话里，我们说 runc 工作在 <strong>OCI 层</strong>，称它为<strong>低层运行时（low-level runtime）</strong>：它负责和内核打交道，真正地把容器“造”出来和拆掉。</p>
+
+<h2 id="containerd">containerd：高层运行时</h2>
+
+<p>
+  <strong>containerd</strong>（读作 “container dee”）是 Docker 从守护进程中剥离出来的另一个工具。
+  我们称它为<strong>高层运行时（high-level runtime）</strong>，因为它管理的是生命周期事件：启动、停止、删除容器。
+  但真正干活需要一个低层运行时，大多数情况下就是 runc。
+</p>
+
+<div class="cards">
+  <div class="card"><h4>containerd · 包工头</h4><p>接活、安排、盯进度：决定什么时候启动哪个容器、把镜像准备好、监控状态。</p></div>
+  <div class="card"><h4>runc · 施工队</h4><p>按图纸干活：调用内核创建命名空间和 cgroups，把容器进程启动起来，然后撤场。</p></div>
+</div>
+
+<p>
+  containerd 最初的定位是一个只管容器生命周期的小工具，后来逐渐增加了镜像、网络、卷管理等能力 ——
+  一个原因是 Kubernetes 等项目希望 containerd 能自己拉取和推送镜像。好在这些功能是模块化的，其他项目可以只取需要的部分。
+</p>
+<p>containerd 由 Docker 公司开发并捐赠给了 CNCF，目前是 CNCF 的<strong>毕业项目</strong>，稳定且可用于生产。</p>
+
+<div class="box new">
+  <div class="t">&#10024; 最新变化：containerd 2.x 与 containerd 镜像存储</div>
+  <p>
+    containerd 在 2024 年底发布了 2.0，Docker Desktop 4.92 自带的已经是 containerd 2.3。
+    更重要的是，从 <strong>Docker Engine 29</strong> 开始，全新安装默认使用 <strong>containerd 镜像存储</strong>：
+    镜像的拉取、存储、解包都由 containerd 的 “snapshotter” 负责，而不再是 dockerd 自己的“图驱动（graph driver）”。
+    这意味着 Docker 和 Kubernetes 在镜像管理上走向了同一套实现，也让多平台镜像、镜像证明等功能开箱即用。
+  </p>
+</div>
+
+<h2 id="run-flow">一次 docker run 的完整旅程</h2>
+
+<p>现在把所有零件串起来。运行下面的命令启动一个 NGINX 容器：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker run -d --name ctr1 nginx
+$ docker ps
+CONTAINER ID   IMAGE   COMMAND                  CREATED         STATUS         PORTS    NAMES
+9cfb0c9aacb2   nginx   "/docker-entrypoint.…"   9 seconds ago   Up 9 seconds   80/tcp   ctr1
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 420" role="img" aria-label="docker run 从 CLI 到内核的完整调用链">
+  <rect class="bx-b" x="20"  y="20" width="150" height="54" rx="10"/><text class="ttl on-b" x="95"  y="44" text-anchor="middle">① Docker CLI</text><text class="mono" x="95" y="63" text-anchor="middle">docker run</text>
+  <rect class="bx-a" x="210" y="20" width="150" height="54" rx="10"/><text class="ttl on-a" x="285" y="44" text-anchor="middle">② dockerd</text><text class="sm" x="285" y="63" text-anchor="middle">解析 API 请求</text>
+  <rect class="bx-g" x="400" y="20" width="150" height="54" rx="10"/><text class="ttl on-g" x="475" y="44" text-anchor="middle">③ containerd</text><text class="sm" x="475" y="63" text-anchor="middle">准备 OCI bundle</text>
+  <rect class="bx-p" x="590" y="20" width="150" height="54" rx="10"/><text class="ttl on-p" x="665" y="44" text-anchor="middle">④ shim</text><text class="sm" x="665" y="63" text-anchor="middle">为容器 fork</text>
+
+  <path class="ln-a" d="M172 47 H206" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M362 47 H396" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M552 47 H586" marker-end="url(#ar-a)"/>
+  <text class="sm" x="189" y="92" text-anchor="middle">HTTP over</text>
+  <text class="sm" x="189" y="106" text-anchor="middle">docker.sock</text>
+  <text class="sm" x="379" y="92" text-anchor="middle">gRPC</text>
+  <text class="sm" x="569" y="92" text-anchor="middle">fork</text>
+
+  <path class="ln-a" d="M665 76 V126" marker-end="url(#ar-a)"/>
+  <rect class="bx-r" x="560" y="130" width="180" height="54" rx="10"/><text class="ttl on-r" x="650" y="154" text-anchor="middle">⑤ runc</text><text class="sm" x="650" y="173" text-anchor="middle">调用内核创建容器</text>
+
+  <path class="ln-a" d="M560 157 H480" marker-end="url(#ar-a)"/>
+  <rect class="bx" x="220" y="130" width="255" height="54" rx="10"/>
+  <text class="ttl" x="347" y="154" text-anchor="middle">⑥ Linux 内核</text>
+  <text class="sm" x="347" y="173" text-anchor="middle">namespaces · cgroups · capabilities</text>
+
+  <path class="ln-g" d="M347 186 V222" marker-end="url(#ar-g)"/>
+  <rect class="bx-g" x="200" y="226" width="300" height="50" rx="10"/>
+  <text class="ttl on-g" x="350" y="249" text-anchor="middle">⑦ 容器进程启动（nginx）</text>
+  <text class="sm" x="350" y="267" text-anchor="middle">作为 runc 的子进程诞生</text>
+
+  <rect class="bx-d" x="20" y="300" width="720" height="104" rx="10"/>
+  <text class="ttl" x="40" y="324">容器启动之后的进程关系</text>
+  <text class="mono" x="40" y="350">containerd ── containerd-shim-runc-v2 ── nginx (PID 1)</text>
+  <text class="mono" x="236" y="372" style="fill:var(--fg-faint)">└─ runc  ← 容器一启动就退出</text>
+  <text class="sm" x="40" y="394">shim 接替 runc 成为容器的父进程，保持 STDIN/STDOUT 畅通并向 containerd 汇报状态</text>
+</svg>
+<figcaption>图 5-3　一次 docker run 的完整旅程</figcaption>
+</figure>
+
+<p>逐步解读：</p>
+<ol>
+  <li><strong>CLI → dockerd：</strong>Docker 客户端把命令转换成 API 请求，发给守护进程。守护进程可以在本地套接字上提供 API
+    （Linux 上是 <code>/var/run/docker.sock</code>，Windows 上是 <code>\\.\pipe\docker_engine</code>），也可以通过网络提供。</li>
+  <li><strong>dockerd → containerd：</strong>守护进程收到请求，理解为“要创建一个新容器”，于是通过 gRPC 调用 containerd 的 CRUD 风格 API。
+    记住：守护进程里<strong>已经没有任何创建容器的代码</strong>了。</li>
+  <li><strong>containerd 准备材料：</strong>containerd 其实也不会创建容器。它把所需的 Docker 镜像转换成一个 <strong>OCI bundle</strong>（根文件系统 + <code>config.json</code>），
+    然后通过 shim 让 runc 用这个 bundle 创建容器。</li>
+  <li><strong>runc 干活：</strong>runc 调用操作系统内核，把创建容器所需的一切（命名空间、cgroups 等）组装起来。</li>
+  <li><strong>容器诞生，runc 撤场：</strong>容器作为 runc 的子进程启动，一旦容器启动成功，runc 立刻退出。</li>
+</ol>
+
+<div class="box key">
+  <div class="t">&#9733; “无守护进程容器”</div>
+  <p>
+    把容器的创建和管理从 Docker 守护进程中解耦出来、交给 containerd 和 runc 之后，就可以<strong>停止、重启甚至升级 Docker 守护进程，而不影响正在运行的容器</strong>。
+    我们称之为<strong>无守护进程容器（daemonless containers）</strong>。要在 Linux 上启用这个行为，需要在 <code>/etc/docker/daemon.json</code> 里设置
+    <code>"live-restore": true</code>。
+  </p>
+</div>
+
+<p>别忘了清理刚才的容器：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker rm ctr1 -f
+</pre>
+</div>
+
+<h2 id="shim">shim 到底是干什么的？</h2>
+
+<p><strong>shim（垫片）</strong>是软件工程里常见的一种模式。Docker 引擎在 containerd 和 OCI 层之间使用 shim，带来三个好处：</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#128260;</span><h4>无守护进程容器</h4><p>dockerd 和 containerd 重启时，容器由 shim“托管”着，不会跟着一起挂掉。</p></div>
+  <div class="card"><span class="ic">&#9889;</span><h4>更高效</h4><p>每个容器一个 runc 进程，但 runc 启动完就退出；只留下一个很轻的 shim 常驻。</p></div>
+  <div class="card"><span class="ic">&#128268;</span><h4>可插拔的 OCI 层</h4><p>换一个 shim，就能把 runc 换成其他低层运行时，比如 gVisor、Kata Containers，或第 11 章的 Wasm 运行时。</p></div>
+</div>
+
+<p>
+  具体来说：containerd 为每个新容器 fork 出一个 shim 和一个 runc 进程。runc 在容器启动后立即退出，shim 就成了容器的父进程。
+  shim 负责汇报容器状态，并执行一些底层任务，比如保持容器的 STDIN 和 STDOUT 流一直打开。
+</p>
+
+<h2 id="linux">在 Linux 上长什么样</h2>
+
+<p>在 Linux 系统上，上面讨论的组件对应以下几个独立的可执行文件：</p>
+
+<div class="tw"><table>
+  <tr><th>可执行文件</th><th>组件</th><th>什么时候能看到</th></tr>
+  <tr><td><code>/usr/bin/dockerd</code></td><td>Docker 守护进程</td><td>Docker 运行时一直在</td></tr>
+  <tr><td><code>/usr/bin/containerd</code></td><td>containerd</td><td>一直在</td></tr>
+  <tr><td><code>/usr/bin/containerd-shim-runc-v2</code></td><td>shim</td><td>每个运行中的容器对应一个</td></tr>
+  <tr><td><code>/usr/bin/runc</code></td><td>runc</td><td>只在创建容器的一瞬间存在</td></tr>
+</table></div>
+
+<p>在 Linux Docker 主机上启动一个容器，然后用 <code>ps</code> 就能看到它们：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker run -d --name demo nginx
+$ ps -ef --forest | grep -E "dockerd|containerd|nginx" | grep -v grep
+root   1021     1  /usr/bin/containerd
+root   1180     1  /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+root   5530     1  /usr/bin/containerd-shim-runc-v2 -namespace moby -id 3f1c... -address /run/containerd/containerd.sock
+root   5553  5530   \_ nginx: master process nginx -g daemon off;
+101    5601  5553       \_ nginx: worker process
+</pre>
+</div>
+
+<p>
+  注意 <code>nginx</code> 的父进程（PPID 5530）是 shim，而不是 dockerd 或 containerd。
+  如果你用的是 Mac 上的 Docker Desktop，就看不到这些进程，因为引擎跑在那台 Linux 虚拟机里。
+</p>
+
+<h3>我们还需要守护进程吗？</h3>
+<p>
+  到今天，Docker 已经把守护进程里的大部分功能剥离出去了。但 dockerd 仍然负责提供 <strong>Docker API</strong>，
+  以及构建（调用 BuildKit）、网络（libnetwork）、卷等高层功能 —— 它是 Docker 用户体验的“门面”。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 回头看看 hello-world</div>
+  <p>
+    第 3 章运行 <code>docker run hello-world</code> 时，输出里有 4 个步骤：客户端联系守护进程 → 守护进程从 Docker Hub 拉取镜像 →
+    守护进程创建容器并运行 → 守护进程把输出流回客户端。现在你知道第 3 步背后其实是 containerd、shim 和 runc 在接力了。
+  </p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="tw"><table>
+  <tr><th>组件</th><th>角色</th><th>一句话</th></tr>
+  <tr><td>dockerd</td><td>守护进程</td><td>提供 Docker API，是用户体验的门面</td></tr>
+  <tr><td>containerd</td><td>高层运行时</td><td>管理容器生命周期和镜像；CNCF 毕业项目，Kubernetes 也在用</td></tr>
+  <tr><td>shim</td><td>垫片</td><td>容器的“保姆”，让守护进程可以重启；让低层运行时可以替换</td></tr>
+  <tr><td>runc</td><td>低层运行时</td><td>OCI 运行时规范的参考实现，调用内核创建容器后立即退出</td></tr>
+</table></div>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>在一台 Linux Docker 主机上（Multipass 虚拟机也行）启动 3 个容器，用 <code>ps -ef --forest</code> 数一数有几个 <code>containerd-shim-runc-v2</code> 进程。</li>
+    <li>在 <code>/etc/docker/daemon.json</code> 里加上 <code>{"live-restore": true}</code>，重启 Docker（<code>sudo systemctl restart docker</code>），
+      观察之前运行的容器是否还活着。再把这个配置去掉试一次，对比结果。</li>
+    <li>运行 <code>docker info</code>，找到 <code>Default Runtime</code> 和 <code>Runtimes</code> 两行，看看你的引擎支持哪些低层运行时。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

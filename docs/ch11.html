@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 11 章 · Docker 与 Wasm — Docker 从零到精通</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="11">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 11 章</span>
+<h1>Docker 与 Wasm <span class="badge dep">Desktop 功能已弃用</span></h1>
+<p class="lede">
+  WebAssembly（Wasm）被称为云计算的“第三波”：第一波建立在虚拟机上，第二波建立在容器上，第三波正在 Wasm 上展开。
+  本章写一个简单的 Wasm Web 应用，把它打包成 OCI 镜像，并作为“Wasm 容器”运行 —— 同时也会告诉你，这条路在 Docker Desktop 上已经走到尽头。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 先读这里：Docker Desktop 的 Wasm 功能已被弃用</div>
+  <p>
+    原书写作时（2025 年 5 月），Wasm 支持是 Docker Desktop 的 Beta 功能。此后 Docker 官方已将 <strong>Wasm workloads 标记为弃用（deprecated）</strong>：
+    不再积极维护，并将在未来的 Docker Desktop 版本中移除。
+  </p>
+  <p>
+    所以本章的定位是：<strong>理解 Wasm 的概念，以及“容器运行时可以被替换”这一重要思想</strong>（回顾第 5 章的 shim）。
+    动手部分可以在仍保留该功能的 Docker Desktop 上尝试，但不要把它用于新的生产设计。想在生产中用 Wasm，可以直接使用 Spin / wasmtime 等运行时，
+    或在 Kubernetes 上用 SpinKube、containerd 的 runwasi shim。
+  </p>
+</div>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解 Wasm 是什么，它和容器相比的优势与局限</li>
+    <li>理解“Wasm 容器”的原理：scratch 镜像 + .wasm 文件 + 替换 runc 的 Wasm 运行时</li>
+    <li>用 Spin 写一个 Rust Web 应用并编译成 Wasm</li>
+    <li>用 <code>--platform wasi/wasm</code> 构建镜像，用 <code>--runtime</code> 运行它</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="waves">云计算的三波浪潮</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="虚拟机、容器、Wasm 三波浪潮">
+  <rect class="bx-b" x="20" y="60" width="220" height="130" rx="12"/>
+  <text class="ttl on-b" x="130" y="88" text-anchor="middle">第一波：虚拟机</text>
+  <text class="sm" x="130" y="112" text-anchor="middle">GB 级 · 分钟级启动</text>
+  <text class="sm" x="130" y="130" text-anchor="middle">虚拟化硬件</text>
+  <text class="sm" x="130" y="148" text-anchor="middle">最灵活、隔离最强</text>
+  <rect class="bx-a" x="270" y="60" width="220" height="130" rx="12"/>
+  <text class="ttl on-a" x="380" y="88" text-anchor="middle">第二波：容器</text>
+  <text class="sm" x="380" y="112" text-anchor="middle">MB 级 · 秒级启动</text>
+  <text class="sm" x="380" y="130" text-anchor="middle">虚拟化操作系统</text>
+  <text class="sm" x="380" y="148" text-anchor="middle">当今云原生的主流</text>
+  <rect class="bx-p" x="520" y="60" width="220" height="130" rx="12"/>
+  <text class="ttl on-p" x="630" y="88" text-anchor="middle">第三波：Wasm</text>
+  <text class="sm" x="630" y="112" text-anchor="middle">KB 级 · 毫秒级启动</text>
+  <text class="sm" x="630" y="130" text-anchor="middle">一种新的虚拟指令集</text>
+  <text class="sm" x="630" y="148" text-anchor="middle">沙箱安全、跨平台</text>
+  <path class="ln-a" d="M242 125 H266" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M492 125 H516" marker-end="url(#ar-a)"/>
+  <text class="lbl" x="380" y="36" text-anchor="middle">越往右：越小、越快、越安全、越便携 —— 但适用范围也越窄</text>
+  <text class="lbl" x="380" y="218" text-anchor="middle">三者不是互相取代，而是在未来的云里并存</text>
+</svg>
+<figcaption>图 11-1　云计算的三波浪潮</figcaption>
+</figure>
+
+<h2 id="intro">Wasm 与 Wasm 容器</h2>
+
+<p>
+  Wasm 是一种新的<strong>虚拟机指令集架构</strong>，编程语言可以把程序编译成它。也就是说，你不再把应用编译成“Linux on ARM”或“Linux on AMD”，
+  而是编译成 Wasm，然后它就能在任何装有 Wasm 运行时的系统上运行。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="传统编译目标与 Wasm 编译目标的对比">
+  <text class="ttl" x="185" y="22" text-anchor="middle">传统方式：每个平台编译一次</text>
+  <rect class="bx" x="115" y="36" width="140" height="36" rx="8"/><text class="lbl" x="185" y="59" text-anchor="middle">源代码</text>
+  <path class="ln" d="M150 74 L70 120" marker-end="url(#ar)"/>
+  <path class="ln" d="M185 74 V120" marker-end="url(#ar)"/>
+  <path class="ln" d="M220 74 L300 120" marker-end="url(#ar)"/>
+  <rect class="bx-b" x="20"  y="124" width="110" height="40" rx="8"/><text class="sm on-b" x="75" y="148" text-anchor="middle">linux/amd64</text>
+  <rect class="bx-b" x="135" y="124" width="100" height="40" rx="8"/><text class="sm on-b" x="185" y="148" text-anchor="middle">linux/arm64</text>
+  <rect class="bx-b" x="240" y="124" width="110" height="40" rx="8"/><text class="sm on-b" x="295" y="148" text-anchor="middle">windows/amd64</text>
+  <text class="sm" x="185" y="190" text-anchor="middle">N 个平台 = N 个二进制文件 / 镜像</text>
+
+  <line class="ln-d" x1="380" y1="30" x2="380" y2="200"/>
+
+  <text class="ttl" x="570" y="22" text-anchor="middle">Wasm：只编译一次</text>
+  <rect class="bx" x="500" y="36" width="140" height="36" rx="8"/><text class="lbl" x="570" y="59" text-anchor="middle">源代码</text>
+  <path class="ln-p" d="M570 74 V92" marker-end="url(#ar-p)"/>
+  <rect class="bx-p" x="500" y="96" width="140" height="36" rx="8"/><text class="lbl on-p" x="570" y="119" text-anchor="middle">app.wasm</text>
+  <path class="ln" d="M540 134 L460 170" marker-end="url(#ar)"/>
+  <path class="ln" d="M570 134 V170" marker-end="url(#ar)"/>
+  <path class="ln" d="M600 134 L680 170" marker-end="url(#ar)"/>
+  <rect class="bx-g" x="405" y="174" width="105" height="36" rx="8"/><text class="sm on-g" x="457" y="197" text-anchor="middle">Wasm 运行时</text>
+  <rect class="bx-g" x="518" y="174" width="105" height="36" rx="8"/><text class="sm on-g" x="570" y="197" text-anchor="middle">Wasm 运行时</text>
+  <rect class="bx-g" x="631" y="174" width="105" height="36" rx="8"/><text class="sm on-g" x="683" y="197" text-anchor="middle">Wasm 运行时</text>
+  <text class="sm" x="570" y="230" text-anchor="middle">任何 CPU、任何 OS，只要有运行时</text>
+</svg>
+<figcaption>图 11-2　Wasm 是一个“虚拟的编译目标”</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th></th><th>传统 Linux 容器</th><th>Wasm 应用</th></tr>
+  <tr><td>体积</td><td>MB 到数百 MB</td><td>KB 到几 MB</td></tr>
+  <tr><td>启动</td><td>秒级</td><td>毫秒级（适合 Serverless 冷启动）</td></tr>
+  <tr><td>可移植性</td><td>需要为每种 CPU 架构构建</td><td>一个二进制到处运行</td></tr>
+  <tr><td>安全模型</td><td>共享内核 + 各种加固</td><td>默认拒绝的沙箱，能力需显式授予</td></tr>
+  <tr><td>擅长</td><td>几乎一切</td><td>AI 推理、Serverless 函数、插件、边缘设备</td></tr>
+  <tr><td>不擅长</td><td>—</td><td>复杂网络、重 I/O（标准仍在完善，如 WASI 0.2 / 0.3）</td></tr>
+</table></div>
+
+<p>
+  <strong>Wasm 容器</strong>就是把一个 Wasm 二进制放进一个最小的 <code>scratch</code> 镜像里运行，这样就能用 <code>docker build</code>、<code>docker run</code>、Docker Hub 这些熟悉的工具来构建、分发和运行它。
+  关键在于：containerd 不再调用 runc，而是通过 shim 调用一个 <strong>Wasm 运行时</strong>：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 260" role="img" aria-label="普通容器与 Wasm 容器在运行时层的区别">
+  <rect class="bx-g" x="230" y="20" width="300" height="46" rx="10"/>
+  <text class="ttl on-g" x="380" y="48" text-anchor="middle">containerd</text>
+  <path class="ln" d="M320 68 L180 104" marker-end="url(#ar)"/>
+  <path class="ln" d="M440 68 L580 104" marker-end="url(#ar)"/>
+
+  <rect class="bx-p" x="60" y="108" width="240" height="36" rx="8"/><text class="sm on-p" x="180" y="131" text-anchor="middle">containerd-shim-runc-v2</text>
+  <rect class="bx-r" x="60" y="152" width="240" height="36" rx="8"/><text class="sm on-r" x="180" y="175" text-anchor="middle">runc（调用内核命名空间）</text>
+  <rect class="bx-a" x="60" y="196" width="240" height="44" rx="8"/><text class="sm on-a" x="180" y="215" text-anchor="middle">普通 Linux 容器</text><text class="sm" x="180" y="231" text-anchor="middle">--platform linux/arm64</text>
+
+  <rect class="bx-p" x="460" y="108" width="240" height="36" rx="8"/><text class="sm on-p" x="580" y="131" text-anchor="middle">containerd-shim-spin-v2</text>
+  <rect class="bx-r" x="460" y="152" width="240" height="36" rx="8"/><text class="sm on-r" x="580" y="175" text-anchor="middle">Spin Wasm 运行时</text>
+  <rect class="bx-a" x="460" y="196" width="240" height="44" rx="8"/><text class="sm on-a" x="580" y="215" text-anchor="middle">Wasm 容器</text><text class="sm" x="580" y="231" text-anchor="middle">--platform wasi/wasm</text>
+  <text class="lbl" x="380" y="170" text-anchor="middle">换一个 shim</text>
+  <text class="lbl" x="380" y="188" text-anchor="middle">就换了运行时</text>
+</svg>
+<figcaption>图 11-3　Wasm 容器：换掉 runc，其他一切照旧（回忆第 5 章“可插拔的 OCI 层”）</figcaption>
+</figure>
+
+<h2 id="prereqs">准备工作</h2>
+
+<p>如果要动手，需要：</p>
+<ul>
+  <li>仍然提供 Wasm 功能的 Docker Desktop（原书在 4.37 上测试），并启用 Wasm；</li>
+  <li>Rust 1.82+，并安装 Wasm 编译目标；</li>
+  <li>Spin 3.1+。</li>
+</ul>
+
+<h3>配置 Docker Desktop</h3>
+
+<p>
+  打开 Docker Desktop 设置：在 <strong>General</strong> 页确认勾选了 <em>Use containerd for pulling and storing images</em>；
+  在 <strong>Features in development</strong> 页勾选 <em>Enable Wasm</em>，然后点击 <em>Apply &amp; restart</em>。
+  Wasm 功能不支持 Multipass 等其他 Docker 环境。
+</p>
+
+<h3>安装 Rust 和 Wasm 编译目标</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+# 先按 https://rustup.rs 的说明安装 Rust，然后：
+$ rustup target add wasm32-wasip1
+info: downloading component 'rust-std' for 'wasm32-wasip1'
+info: installing component 'rust-std' for 'wasm32-wasip1'
+</pre>
+</div>
+
+<h3>安装 Spin</h3>
+
+<p><strong>Spin</strong> 是一个让构建和运行 Wasm 应用变得简单的框架和运行时（最初由 Fermyon 创建，现为 CNCF 项目）。按官方文档安装后验证：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ spin --version
+spin 3.1.0 (1aa89da 2024-12-18)
+</pre>
+</div>
+
+<p>Docker Desktop 自带了多个 Wasm 运行时（shim），可以这样查看：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ docker run --rm -i --privileged --pid=host jorgeprendes420/docker-desktop-shim-manager:latest
+io.containerd.wasmtime.v1
+io.containerd.wws.v1
+io.containerd.slight.v1
+io.containerd.wasmer.v1
+io.containerd.spin.v2           &lt;&lt;---- 本章要用的
+io.containerd.lunatic.v1
+io.containerd.wasmedge.v1
+</pre>
+</div>
+
+<h2 id="write">编写 Wasm 应用</h2>
+
+<p>用 spin 创建一个叫 hello-world 的 Rust Web 应用，按提示输入：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ spin new hello-world -t http-rust
+Description: Wasm app
+HTTP path: /hello
+
+$ cd hello-world
+$ tree
+.
+├── Cargo.toml
+├── spin.toml
+└── src
+    └── lib.rs
+</pre>
+</div>
+
+<p>编辑 <code>src/lib.rs</code>，把引号里的文字改成 <code>Docker loves Wasm</code>：</p>
+
+<div class="code" data-lang="rust" data-file="src/lib.rs">
+<pre>
+use spin_sdk::http::{IntoResponse, Request, Response};
+use spin_sdk::http_component;
+
+#[http_component]
+fn handle_hello_world(req: Request) -> anyhow::Result&lt;impl IntoResponse&gt; {
+    Ok(Response::builder()
+        .status(200)
+        .header("content-type", "text/plain")
+        .body("Docker loves Wasm")      // ← 改这里
+        .build())
+}
+</pre>
+</div>
+
+<p>把应用编译成 Wasm 二进制：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ spin build
+Building component hello-world with `cargo build --target wasm32-wasip1 --release`
+&lt;Snip&gt;
+Finished building all Spin components
+
+$ tree target
+target
+└── wasm32-wasip1
+    └── release
+        └── hello_world.wasm        &lt;&lt;---- 这就是 Wasm 应用
+</pre>
+</div>
+
+<p>先用本地安装的 spin 运行时测试一下：</p>
+
+<div class="code" data-lang="text">
+<pre>
+$ spin up
+Serving http://127.0.0.1:3000
+Available Routes:
+  hello-world: http://127.0.0.1:3000/hello
+</pre>
+</div>
+
+<p>浏览器访问 <code>http://127.0.0.1:3000/hello</code>，看到 “Docker loves Wasm” 就成功了。按 <kbd>Ctrl</kbd>+<kbd>C</kbd> 停止。</p>
+
+<h2 id="containerize">容器化 Wasm 应用</h2>
+
+<p>和往常一样，需要一个 Dockerfile。在当前目录创建它：</p>
+
+<div class="code" data-lang="dockerfile" data-file="Dockerfile">
+<pre>
+FROM scratch
+COPY /target/wasm32-wasip1/release/hello_world.wasm .
+COPY spin.toml .
+</pre>
+</div>
+
+<p>
+  <code>FROM scratch</code> 表示从空镜像开始 —— Wasm 容器不需要 Linux 操作系统。两条 <code>COPY</code> 把 Wasm 应用和 <code>spin.toml</code> 复制到镜像根目录。
+  但 <code>spin.toml</code> 里写的 Wasm 文件路径还是 <code>target/wasm32-wasip1/release/</code>，所以要改成根目录：
+</p>
+
+<div class="code" data-lang="toml" data-file="spin.toml（节选）">
+<pre>
+[component.hello-world]
+source = "hello_world.wasm"      # 去掉前面的目录，只保留文件名
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 180" role="img" aria-label="Wasm 镜像的内容">
+  <rect class="bx-a" x="220" y="20" width="320" height="140" rx="12"/>
+  <text class="ttl on-a" x="380" y="46" text-anchor="middle">nigelpoulton/ddd-book:wasm</text>
+  <rect class="bx-p" x="240" y="62" width="280" height="30" rx="6"/><text class="sm on-p" x="380" y="82" text-anchor="middle">层 2：spin.toml（应用清单）</text>
+  <rect class="bx-p" x="240" y="98" width="280" height="30" rx="6"/><text class="sm on-p" x="380" y="118" text-anchor="middle">层 1：hello_world.wasm</text>
+  <text class="sm" x="380" y="148" text-anchor="middle">没有 OS · 没有 shell · 总共约 100KB</text>
+  <text class="lbl" x="110" y="90" text-anchor="middle">平台</text>
+  <text class="mono" x="110" y="110" text-anchor="middle">wasi/wasm</text>
+  <text class="lbl" x="650" y="90" text-anchor="middle">对比 nginx</text>
+  <text class="mono" x="650" y="110" text-anchor="middle">≈ 190MB</text>
+</svg>
+<figcaption>图 11-4　Wasm 镜像的全部内容</figcaption>
+</figure>
+
+<p>构建镜像（请换成你自己的 Docker Hub 用户名）：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker build \
+    --platform wasi/wasm \
+    --provenance=false \
+    -t nigelpoulton/ddd-book:wasm .
+
+$ docker images
+REPOSITORY              TAG    IMAGE ID       CREATED          SIZE
+nigelpoulton/ddd-book   wasm   7b55889f1006   28 seconds ago   104kB
+</pre>
+</div>
+
+<p>
+  <code>--platform wasi/wasm</code> 把镜像标记为 Wasm 镜像。它看起来就是个普通镜像，只是小得惊人（104KB）。你可以像平常一样推送到 Docker Hub：
+</p>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker push nigelpoulton/ddd-book:wasm
+</pre>
+</div>
+
+<p>在 Docker Hub 上会看到它被识别为 <code>wasi/wasm</code> 镜像，而且没有漏洞分析数据 —— 镜像扫描工具还不能分析 Wasm 镜像。</p>
+
+<h2 id="run">运行 Wasm 容器</h2>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker run -d --name wasm-ctr \
+    --runtime=io.containerd.spin.v2 \
+    --platform=wasi/wasm \
+    -p 5556:80 \
+    nigelpoulton/ddd-book:wasm /
+</pre>
+</div>
+
+<p><code>--runtime</code> 让 Docker 用 spin Wasm 运行时来执行这个容器（而不是 runc）。用 <code>docker ps</code> 确认它在运行，然后访问 <code>http://localhost:5556/hello</code>。</p>
+
+<h2 id="cleanup">清理</h2>
+
+<div class="code" data-lang="bash">
+<pre>
+$ docker rm wasm-ctr -f
+$ docker rmi nigelpoulton/ddd-book:wasm
+</pre>
+</div>
+
+<p>Docker Hub 上的镜像和本地的 spin 项目也可以按需删除。</p>
+
+<h2 id="future">Wasm 之后去哪里？</h2>
+
+<div class="cards">
+  <div class="card"><h4>直接用 Spin / wasmtime</h4><p>不经过 Docker，直接在服务器或边缘节点上运行 Wasm 应用。</p></div>
+  <div class="card"><h4>Kubernetes + SpinKube</h4><p>在 K8s 中用 containerd 的 runwasi shim 调度 Wasm 工作负载，和普通 Pod 混部。</p></div>
+  <div class="card"><h4>边缘平台</h4><p>Fastly、Cloudflare Workers 等边缘平台原生运行 Wasm。</p></div>
+  <div class="card"><h4>OCI 分发仍然适用</h4><p>Wasm 模块依旧可以作为 OCI 制品存进你的镜像仓库。</p></div>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>Wasm 是一种新的虚拟指令集：一次编译、到处运行，比传统容器更小、更快、更安全，但目前不擅长重 I/O 和复杂网络。</li>
+  <li>“Wasm 容器”= scratch 镜像 + .wasm 文件 + 替代 runc 的 Wasm 运行时 shim，因此能沿用 <code>docker build/push/run</code>。</li>
+  <li>构建时用 <code>--platform wasi/wasm</code>，运行时用 <code>--runtime=io.containerd.spin.v2</code>。</li>
+  <li>Docker Desktop 的 Wasm 功能已被弃用；Wasm 生态本身仍在快速发展，可以通过 Spin、SpinKube、边缘平台等方式继续使用。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>不借助 Docker，直接用 <code>spin up</code> 运行本章的应用，并修改返回文本，再 <code>spin build</code> 看看重新编译有多快。</li>
+    <li>用 <code>ls -lh target/wasm32-wasip1/release/hello_world.wasm</code> 查看 Wasm 文件大小，和 <code>docker images nginx</code> 的大小对比。</li>
+    <li>思考：本章的“换一个 shim 就换了运行时”，和第 5 章讲的 shim 有什么关系？还有哪些低层运行时可以通过 shim 接入 containerd？（提示：gVisor、Kata Containers。）</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>
