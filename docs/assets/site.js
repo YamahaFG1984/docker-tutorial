@@ -26,7 +26,8 @@
     { n: 19, t: 'CI/CD 流水线',          d: 'GitHub Actions 构建、扫描、签名、推送' },
     { n: 20, t: '部署到服务器',          d: '反向代理、HTTPS、远程上下文与回滚' },
     { n: 21, t: '按语言写 Dockerfile',   d: 'Node、Python、Go、Java 生产级模板' },
-    { n: 22, t: '下一步与术语表',        d: '学习路线、命令速查与术语', part: '附录' }
+    { n: 22, t: '镜像瘦身实战',          d: '实测：从 1.27 GB 到 68 MB，漏洞从 3454 到 0' },
+    { n: 23, t: '下一步与术语表',        d: '学习路线、命令速查与术语', part: '附录' }
   ];
 
   var cur = parseInt(document.body.dataset.chapter || '0', 10);

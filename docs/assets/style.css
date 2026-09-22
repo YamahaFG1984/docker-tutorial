@@ -24,6 +24,7 @@
   --purple-bg: #f1ecfb;
   --code-bg:   #2b2620;
   --code-fg:   #e9e2d8;
+  --bar:       #d95602;
   --radius:    10px;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
           "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
@@ -56,6 +57,7 @@
     --purple-bg: #241d33;
     --code-bg:   #12100e;
     --code-fg:   #e6ded2;
+    --bar:       #e0692a;
     color-scheme: dark;
   }
 }
@@ -82,6 +84,7 @@
   --purple-bg: #241d33;
   --code-bg:   #12100e;
   --code-fg:   #e6ded2;
+  --bar:       #e0692a;
   color-scheme: dark;
 }
 
@@ -451,3 +454,11 @@ kbd {
 .dgm .dot-b { fill: var(--blue); }
 .dgm .dot-g { fill: var(--green); }
 .dgm .fill-a { fill: var(--accent-bg); stroke: none; }
+
+/* 数据图表（第 22 章）：单序列柱状图 */
+.dgm .bar      { fill: var(--bar); }
+.dgm .bar-hit  { fill: transparent; cursor: default; }
+.dgm .bar-hit:hover + .bar, .dgm g.row:hover .bar { opacity: .82; }
+.dgm .grid     { stroke: var(--line); stroke-width: 1; fill: none; }
+.dgm .axis     { stroke: var(--line-2); stroke-width: 1; fill: none; }
+.dgm .val      { fill: var(--fg); font-size: 12px; font-variant-numeric: tabular-nums; }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>附录 · 下一步与术语表 — Docker 从零到精通</title>
+<title>第 22 章 · 镜像瘦身实战 — Docker 从零到精通</title>
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body data-chapter="22">
@@ -11,229 +11,621 @@
 <aside id="sidebar"></aside>
 <main>
 
-<span class="chapter-eyebrow">附录</span>
-<h1>下一步与术语表</h1>
+<span class="chapter-eyebrow">第 22 章</span>
+<h1>镜像瘦身实战</h1>
 <p class="lede">
-  恭喜你读完了全部 21 章！你已经走在掌握 Docker 和容器的路上，还顺便学会了在本地运行大模型。
-  这一页把全书的命令整理成速查表，把关键术语整理成词汇表，并给出接下来的学习路线。
+  第 6、8、16、21 章从不同角度讲过“镜像要小”，但到底能小多少？每一步的收益有多大？镜像小了，漏洞真的会变少吗？
+  这一章不讲道理，只做实验：<strong>拿同一个应用，一步一步地优化，每一步都真实构建、测量体积、扫描漏洞</strong>。
+  结果是从 1268 MB、3454 个已知漏洞，降到 72 MB、0 个漏洞。
 </p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>用真实数据理解每个瘦身手段的收益：换基础镜像、.dockerignore、多阶段构建、换发行版、删多余组件</li>
+    <li>学会找出镜像里“胖”在哪里</li>
+    <li>理解“在后面的层里删除文件，镜像不会变小”</li>
+    <li>正确解读漏洞扫描的数字：总数不等于风险</li>
+    <li>知道瘦身的优先级：先做收益最大、成本最低的</li>
+  </ul>
+</div>
 
 <div id="chapter-toc"></div>
 
-<h2 id="roadmap">接下来学什么</h2>
+<h2 id="setup">实验设置</h2>
+
+<div class="box note">
+  <div class="t">&#9432; 这些数字是真的测出来的</div>
+  <p>
+    本章所有数字都来自 2026 年 9 月 22 日在一台 x86_64 Linux 机器上的实测：Docker Engine 29.3.1，BuildKit 构建，
+    漏洞扫描使用 Trivy 0.74.0（当天更新的漏洞库）。你自己重做时数字会有出入 —— 基础镜像每周都在更新，漏洞库每天都在变 ——
+    但<strong>每一步的相对变化</strong>是稳定的。
+  </p>
+</div>
+
+<p>示例应用是一个很小的 FastAPI 服务，依赖只有 <code>fastapi</code> 和 <code>uvicorn</code>（锁文件里一共 13 个包）：</p>
+
+<div class="code" data-lang="python" data-file="myapp/main.py">
+<pre>
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+</pre>
+</div>
+
+<p>为了模拟真实项目，项目目录里还有两样“杂物”：开发时建的本地虚拟环境 <code>.venv/</code>（60 MB），和测试用的数据文件 <code>tests/fixtures/big-dump.sql</code>（30 MB）。真实项目里的 <code>.git</code>、<code>node_modules</code>、日志、构建产物都属于这一类。</p>
+
+<p>每个版本我们记录四个指标：</p>
+
+<div class="tw"><table>
+  <tr><th>指标</th><th>含义</th><th>影响什么</th></tr>
+  <tr><td>解压后大小</td><td>镜像在磁盘上展开后的大小</td><td>服务器磁盘占用</td></tr>
+  <tr><td>压缩后大小</td><td>推送、拉取时实际传输的大小</td><td>部署速度、仓库存储费用、冷启动时间</td></tr>
+  <tr><td>漏洞总数</td><td>扫描器发现的所有已知漏洞</td><td>扫描报告看起来有多吓人</td></tr>
+  <tr><td>可修复的严重 + 高危漏洞</td><td>已有修复版本的 Critical 和 High 漏洞</td><td><strong>真正需要你处理的风险</strong></td></tr>
+</table></div>
+
+<h2 id="v1">第 ① 步：直接写</h2>
+
+<p>这是网上最常见、也是很多人第一次写出来的 Dockerfile：</p>
+
+<div class="code" data-lang="dockerfile" data-file="v1.Dockerfile">
+<pre>
+FROM python:3.14
+WORKDIR /app
+COPY . .
+RUN pip install -r requirements.txt
+CMD ["uvicorn", "myapp.main:app", "--host", "0.0.0.0"]
+</pre>
+</div>
+
+<div class="ver">
+  <div><b>1268 MB</b><span>解压后</span></div>
+  <div><b>524 MB</b><span>压缩后（每次部署都要拉这么多）</span></div>
+  <div><b>3454</b><span>已知漏洞（严重 18，高危 311）</span></div>
+  <div><b>11</b><span>可修复的严重 + 高危</span></div>
+</div>
+
+<p>一个只有几行代码的服务，镜像超过 1.2 GB。它胖在哪里？把各层按大小排序：</p>
 
 <figure>
-<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="学完 Docker 之后的学习路线图">
-  <rect class="bx-a" x="20" y="120" width="150" height="70" rx="12"/>
-  <text class="ttl on-a" x="95" y="148" text-anchor="middle">你在这里</text>
-  <text class="sm" x="95" y="170" text-anchor="middle">Docker 基础 ✓</text>
-
-  <path class="ln-a" d="M172 140 L250 60"  marker-end="url(#ar-a)"/>
-  <path class="ln-a" d="M172 155 L250 155" marker-end="url(#ar-a)"/>
-  <path class="ln-a" d="M172 170 L250 250" marker-end="url(#ar-a)"/>
-
-  <rect class="bx-b" x="255" y="20" width="220" height="80" rx="12"/>
-  <text class="ttl on-b" x="365" y="46" text-anchor="middle">编排：Kubernetes</text>
-  <text class="sm" x="365" y="68" text-anchor="middle">Pod · Deployment · Service</text>
-  <text class="sm" x="365" y="86" text-anchor="middle">本地可用 kind / minikube</text>
-
-  <rect class="bx-g" x="255" y="115" width="220" height="80" rx="12"/>
-  <text class="ttl on-g" x="365" y="141" text-anchor="middle">交付：CI/CD</text>
-  <text class="sm" x="365" y="163" text-anchor="middle">第 19 章已入门，继续深入</text>
-  <text class="sm" x="365" y="181" text-anchor="middle">部署策略与发布流程</text>
-
-  <rect class="bx-p" x="255" y="210" width="220" height="80" rx="12"/>
-  <text class="ttl on-p" x="365" y="236" text-anchor="middle">AI 与智能体</text>
-  <text class="sm" x="365" y="258" text-anchor="middle">Model Runner · MCP Toolkit</text>
-  <text class="sm" x="365" y="276" text-anchor="middle">Docker Sandboxes</text>
-
-  <path class="ln" d="M477 60 H530" marker-end="url(#ar)"/>
-  <path class="ln" d="M477 155 H530" marker-end="url(#ar)"/>
-  <path class="ln" d="M477 250 H530" marker-end="url(#ar)"/>
-  <rect class="bx-d" x="535" y="30" width="205" height="60" rx="10"/>
-  <text class="sm" x="637" y="56" text-anchor="middle">Helm · GitOps（Argo CD）</text>
-  <text class="sm" x="637" y="74" text-anchor="middle">服务网格 · 可观测性</text>
-  <rect class="bx-d" x="535" y="125" width="205" height="60" rx="10"/>
-  <text class="sm" x="637" y="151" text-anchor="middle">供应链安全：SBOM、SLSA</text>
-  <text class="sm" x="637" y="169" text-anchor="middle">Cosign 策略验证</text>
-  <rect class="bx-d" x="535" y="220" width="205" height="60" rx="10"/>
-  <text class="sm" x="637" y="246" text-anchor="middle">RAG · 智能体应用</text>
-  <text class="sm" x="637" y="264" text-anchor="middle">用 Compose 编排 AI 应用</text>
+<svg class="dgm" viewBox="0 0 760 276" role="img" aria-label="直接写的镜像中最大的六个层">
+  <line class="grid" x1="240.0" y1="22" x2="240.0" y2="250"/>
+  <text class="sm" x="240.0" y="266" text-anchor="middle">0</text>
+  <line class="grid" x1="340.0" y1="22" x2="340.0" y2="250"/>
+  <text class="sm" x="340.0" y="266" text-anchor="middle">175</text>
+  <line class="grid" x1="440.0" y1="22" x2="440.0" y2="250"/>
+  <text class="sm" x="440.0" y="266" text-anchor="middle">350</text>
+  <line class="grid" x1="540.0" y1="22" x2="540.0" y2="250"/>
+  <text class="sm" x="540.0" y="266" text-anchor="middle">525</text>
+  <line class="grid" x1="640.0" y1="22" x2="640.0" y2="250"/>
+  <text class="sm" x="640.0" y="266" text-anchor="middle">700</text>
+  <text class="sm" x="640.0" y="16" text-anchor="end">该层解压后大小（MB）</text>
+  <g class="row"><title>编译工具和各种 -dev 开发库：667.9 MB（压缩后 236.4 MB）  来源：RUN /bin/sh -c set -ex; 	apt-get update; 	apt-get install -y --no-inst</title>
+    <rect class="bar-hit" x="0" y="32.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="46.0" text-anchor="end">编译工具和各种 -dev 开发库</text>
+    <path class="bar" d="M240.0 38.0 H617.7 Q621.7 38.0 621.7 42.0 V54.0 Q621.7 58.0 617.7 58.0 H240.0 Z"/>
+    <text class="val" x="629.7" y="52.0">667.9 MB</text>
+  </g>
+  <g class="row"><title>版本控制工具（git、hg、svn…）：190.0 MB（压缩后 67.8 MB）  来源：RUN /bin/sh -c set -eux; 	apt-get update; 	apt-get install -y --no-ins</title>
+    <rect class="bar-hit" x="0" y="68.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="82.0" text-anchor="end">版本控制工具（git、hg、svn…）</text>
+    <path class="bar" d="M240.0 74.0 H344.6 Q348.6 74.0 348.6 78.0 V90.0 Q348.6 94.0 344.6 94.0 H240.0 Z"/>
+    <text class="val" x="356.6" y="88.0">190.0 MB</text>
+  </g>
+  <g class="row"><title>Debian 基础系统：124.1 MB（压缩后 49.4 MB）  来源：# debian.sh --arch &#x27;amd64&#x27; out/ &#x27;trixie&#x27; &#x27;@1789689600&#x27;</title>
+    <rect class="bar-hit" x="0" y="104.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="118.0" text-anchor="end">Debian 基础系统</text>
+    <path class="bar" d="M240.0 110.0 H306.9 Q310.9 110.0 310.9 114.0 V126.0 Q310.9 130.0 306.9 130.0 H240.0 Z"/>
+    <text class="val" x="318.9" y="124.0">124.1 MB</text>
+  </g>
+  <g class="row"><title>COPY . .（含 94 MB 杂物）：94.4 MB（压缩后 94.4 MB）  来源：COPY . . # buildkit</title>
+    <rect class="bar-hit" x="0" y="140.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="154.0" text-anchor="end">COPY . .（含 94 MB 杂物）</text>
+    <path class="bar" d="M240.0 146.0 H289.9 Q293.9 146.0 293.9 150.0 V162.0 Q293.9 166.0 289.9 166.0 H240.0 Z"/>
+    <text class="val" x="301.9" y="160.0">94.4 MB</text>
+  </g>
+  <g class="row"><title>Python 解释器本身：79.8 MB（压缩后 29.8 MB）  来源：RUN /bin/sh -c set -eux; 		savedAptMark=&quot;$(apt-mark showmanual)&quot;; 	apt</title>
+    <rect class="bar-hit" x="0" y="176.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="190.0" text-anchor="end">Python 解释器本身</text>
+    <path class="bar" d="M240.0 182.0 H281.6 Q285.6 182.0 285.6 186.0 V198.0 Q285.6 202.0 281.6 202.0 H240.0 Z"/>
+    <text class="val" x="293.6" y="196.0">79.8 MB</text>
+  </g>
+  <g class="row"><title>curl、wget、证书等：61.6 MB（压缩后 25.6 MB）  来源：RUN /bin/sh -c set -eux; 	apt-get update; 	apt-get install -y --no-ins</title>
+    <rect class="bar-hit" x="0" y="212.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="226.0" text-anchor="end">curl、wget、证书等</text>
+    <path class="bar" d="M240.0 218.0 H271.2 Q275.2 218.0 275.2 222.0 V234.0 Q275.2 238.0 271.2 238.0 H240.0 Z"/>
+    <text class="val" x="283.2" y="232.0">61.6 MB</text>
+  </g>
+  <line class="axis" x1="240" y1="22" x2="240" y2="250"/>
 </svg>
-<figcaption>图 A-1　三条可选的进阶路线</figcaption>
+<figcaption>图 22-1　① 中最大的六个层（鼠标悬停可看来源指令）</figcaption>
 </figure>
 
-<h3>Kubernetes</h3>
 <p>
-  理解了 Docker，Kubernetes 就是最自然的下一步。它的思想和 Swarm 很像（期望状态、调和、服务、滚动更新），但范围更大、社区更活跃。
-  你用 Docker 构建的镜像可以直接在 Kubernetes 上运行。Docker Desktop 自带一键启用的 Kubernetes（新版本默认用 kind 创建集群），非常适合入门。
-  原书作者还写了《Quick Start Kubernetes》和《The Kubernetes Book》，可以作为延伸阅读。
+  答案一目了然：<strong>最大的三层都是编译工具和开发库</strong>（gcc、各种 <code>-dev</code> 头文件包、git、svn……），合计近 1 GB。
+  完整版的 <code>python:3.14</code> 基于 Docker 官方的 buildpack-deps 镜像，它的设计目标是“什么都能编译”—— 这对需要编译 C 扩展的构建阶段很方便，
+  但我们的应用运行时一个都用不上。第四大的是 <code>COPY . .</code>，它把 94 MB 的杂物原封不动地带了进来。
 </p>
-
-<h3>AI 编程助手与 Docker Sandboxes</h3>
-<p>
-  2026 年，Docker 推出了 <strong>Docker Sandboxes</strong>（<code>docker sbx</code>）：为 Claude Code、Codex、Gemini CLI 等 AI 编程助手提供基于 <strong>microVM</strong> 的隔离环境。
-  每个会话运行在独立的轻量虚拟机里，只挂载你的项目目录，助手可以放心地安装软件、甚至运行自己的容器，而不会影响你的主机。
-  这正是第 1 章“虚拟机 vs 容器”取舍的新应用：需要更强隔离时，用 microVM；需要轻量高效时，用容器。
-</p>
-
-<h3>参与社区</h3>
-<p>
-  云原生社区里有很多乐于助人的人。可以加入线上的 Docker 群组和讨论，或者搜索本地的 Docker / 云原生 Meetup。
-  <a href="https://docs.docker.com">Docker 官方文档</a>是最权威、更新最及时的参考资料，遇到问题先查它。
-</p>
-
-<h2 id="cheatsheet">命令速查总表</h2>
-
-<h3>镜像</h3>
-<div class="tw"><table class="cheat">
-  <tr><th>命令</th><th>作用</th><th>章节</th></tr>
-  <tr><td><code>docker pull 镜像[:标签|@摘要]</code></td><td>拉取镜像</td><td>6</td></tr>
-  <tr><td><code>docker images</code> / <code>docker image ls</code></td><td>列出本地镜像</td><td>6</td></tr>
-  <tr><td><code>docker inspect 镜像</code> / <code>docker history 镜像</code></td><td>查看元数据 / 构建历史</td><td>6</td></tr>
-  <tr><td><code>docker buildx imagetools inspect 镜像</code></td><td>查看仓库中的摘要与多架构清单</td><td>6</td></tr>
-  <tr><td><code>docker build -t 名:标签 .</code></td><td>构建镜像</td><td>8</td></tr>
-  <tr><td><code>docker tag</code> / <code>docker push</code></td><td>打标签 / 推送</td><td>8</td></tr>
-  <tr><td><code>docker rmi</code> / <code>docker image prune [-a]</code></td><td>删除镜像 / 清理</td><td>6</td></tr>
-  <tr><td><code>docker scout quickview / cves</code></td><td>漏洞扫描</td><td>6、16</td></tr>
-</table></div>
-
-<h3>容器</h3>
-<div class="tw"><table class="cheat">
-  <tr><th>命令</th><th>作用</th><th>章节</th></tr>
-  <tr><td><code>docker run -d --name n -p 主:容 镜像</code></td><td>启动容器</td><td>4、7</td></tr>
-  <tr><td><code>docker ps [-a]</code></td><td>列出容器</td><td>4、7</td></tr>
-  <tr><td><code>docker exec -it 容器 sh</code></td><td>进入容器</td><td>7</td></tr>
-  <tr><td><code>docker logs -f 容器</code></td><td>查看日志</td><td>7</td></tr>
-  <tr><td><code>docker stop</code> / <code>start</code> / <code>restart</code></td><td>生命周期管理</td><td>7</td></tr>
-  <tr><td><code>docker rm [-f] 容器</code> / <code>docker container prune</code></td><td>删除容器</td><td>7</td></tr>
-  <tr><td><code>docker inspect 容器</code> / <code>docker stats</code></td><td>详细信息 / 资源占用</td><td>7</td></tr>
-  <tr><td><code>docker debug 容器|镜像</code></td><td>调试精简容器</td><td>7</td></tr>
-</table></div>
-
-<h3>Compose、网络、卷</h3>
-<div class="tw"><table class="cheat">
-  <tr><th>命令</th><th>作用</th><th>章节</th></tr>
-  <tr><td><code>docker compose up -d</code> / <code>down [-v]</code></td><td>部署 / 删除应用</td><td>9</td></tr>
-  <tr><td><code>docker compose ps / logs / watch / config</code></td><td>查看状态、日志，热更新，查看最终配置</td><td>9</td></tr>
-  <tr><td><code>docker network create / ls / inspect / rm</code></td><td>管理网络</td><td>13、14</td></tr>
-  <tr><td><code>docker volume create / ls / inspect / rm / prune</code></td><td>管理卷</td><td>15</td></tr>
-</table></div>
-
-<h3>Swarm、AI 与系统</h3>
-<div class="tw"><table class="cheat">
-  <tr><th>命令</th><th>作用</th><th>章节</th></tr>
-  <tr><td><code>docker swarm init / join / leave</code></td><td>管理 swarm</td><td>12</td></tr>
-  <tr><td><code>docker stack deploy -c 文件 名称</code></td><td>部署 Swarm 应用</td><td>12</td></tr>
-  <tr><td><code>docker secret create / ls / rm</code></td><td>管理机密</td><td>16</td></tr>
-  <tr><td><code>docker model pull / run / ls / rm</code></td><td>管理本地大模型</td><td>10</td></tr>
-  <tr><td><code>docker version</code> / <code>docker info</code></td><td>版本 / 引擎信息</td><td>3</td></tr>
-  <tr><td><code>docker system df</code> / <code>docker system prune</code></td><td>磁盘占用 / 一键清理未使用的资源</td><td>6、17</td></tr>
-  <tr><td><code>docker events</code></td><td>实时查看引擎事件，排查反复重启、OOM</td><td>17</td></tr>
-</table></div>
-
-<h2 id="glossary">术语表</h2>
-
-<p>这里收录了全书最常用的 Docker 与容器术语（基于原书术语表翻译整理，并补充了 2026 年的新概念）。</p>
-
-<div class="tw"><table>
-  <tr><th>术语</th><th>解释</th></tr>
-  <tr><td>AI 加速硬件</td><td>GPU、NPU、TPU 等能加速 AI 模型执行（推理）的硬件</td></tr>
-  <tr><td>API</td><td>应用编程接口。Docker 的所有资源都定义在 Docker API 中，它是 RESTful 的，由 Docker 守护进程提供</td></tr>
-  <tr><td>基础镜像 Base image</td><td>所有镜像的第一层，由 Dockerfile 的 <code>FROM</code> 指令创建，通常包含应用所需的最小操作系统结构</td></tr>
-  <tr><td>Bake</td><td>Docker 的高层构建编排工具（<code>docker buildx bake</code>），用一个文件声明多个构建目标并行构建；Compose v5 的构建也委托给它</td></tr>
-  <tr><td>构建 Build</td><td>按 Dockerfile 中的指令逐步创建新镜像的过程</td></tr>
-  <tr><td>Build Cloud</td><td>在 Docker 云端基础设施上执行快速构建的订阅服务，团队可共享构建缓存</td></tr>
-  <tr><td>BuildKit</td><td>Docker 的构建引擎，实现高级缓存、多阶段构建、多架构构建等功能</td></tr>
-  <tr><td>Buildx</td><td>Docker 的构建客户端（CLI 插件），支持 BuildKit 全部新特性；自 Engine 23.0 / Desktop 4.19 起为默认</td></tr>
-  <tr><td>Capability</td><td>Linux 内核把 root 权限拆分成的细粒度权限单元，Docker 用它实现最小权限</td></tr>
-  <tr><td>cgroups 控制组</td><td>Linux 内核功能，Docker 用它限制容器使用的 CPU、内存、磁盘、网络资源</td></tr>
-  <tr><td>云原生 Cloud native</td><td>一种设计、构建和运行现代应用的方式。作者认为能自我修复、按需伸缩、滚动更新、版本回滚的应用就是云原生应用</td></tr>
-  <tr><td>集群存储 Cluster store</td><td>Docker Swarm 保存集群和应用状态的分布式数据库，基于 etcd，自动加密并复制到所有管理节点</td></tr>
-  <tr><td>CNM 容器网络模型</td><td>Docker 网络的设计规范，定义沙箱、端点、网络三个构件；libnetwork 是其实现</td></tr>
-  <tr><td>Compose</td><td>定义、部署和管理多容器应用的开放规范；Docker 实现了它并提供 <code>docker compose</code> 命令</td></tr>
-  <tr><td>容器 Container</td><td>一组被组织成看起来像普通操作系统的内核命名空间。每个容器运行一个应用，比虚拟机更小、更快、更便携</td></tr>
-  <tr><td>容器化 Containerize</td><td>把应用及其所有依赖打包成容器镜像的过程</td></tr>
-  <tr><td>容器运行时</td><td>每个节点上负责拉取镜像、启停容器等底层操作的软件。Docker 用两层运行时：高层的 containerd 管理生命周期，低层的 runc 与内核打交道</td></tr>
-  <tr><td>containerd</td><td>行业标准的容器运行时，被 Docker 和大多数 Kubernetes 集群使用，由 Docker 公司捐赠给 CNCF。读作 “container dee”</td></tr>
-  <tr><td>containerd 镜像存储</td><td>由 containerd 的 snapshotter 管理镜像的存储方式，Docker Engine 29 起为全新安装的默认值，原生支持多平台镜像和证明</td></tr>
-  <tr><td>期望状态 Desired state</td><td>集群和应用“应该是什么样子”，比如某服务应有 5 个监听 8080 端口的副本。调和的依据</td></tr>
-  <tr><td>摘要 Digest</td><td>根据镜像内容计算出的加密哈希，不可变，可以精确指定一个镜像</td></tr>
-  <tr><td>Docker</td><td>让容器化应用变得简单的平台：构建镜像、运行和管理独立容器及多容器应用</td></tr>
-  <tr><td>Docker Content Trust（DCT）</td><td>基于 Notary v1 的旧镜像签名机制，已退役：Engine 29 从 CLI 中移除，Notary 服务于 2026 年 12 月 8 日关闭。替代品是 Cosign / Notation</td></tr>
-  <tr><td>Docker Debug</td><td>CLI 插件，为不带调试工具的精简镜像和容器提供带工具箱的调试 shell</td></tr>
-  <tr><td>Docker Desktop</td><td>Linux、Mac、Windows 上的桌面应用，带图形界面和镜像管理、Model Runner 等高级功能</td></tr>
-  <tr><td>Docker Hardened Images（DHI）</td><td>Docker 维护的精简、加固、持续打补丁的基础镜像，2025 年 12 月起免费</td></tr>
-  <tr><td>Docker Hub</td><td>高性能、符合 OCI 标准的公共镜像仓库</td></tr>
-  <tr><td>Docker, Inc.</td><td>Docker 平台背后的美国科技公司</td></tr>
-  <tr><td>docker init</td><td>CLI 插件，分析项目并生成高质量的 Dockerfile、.dockerignore 和 Compose 文件</td></tr>
-  <tr><td>Docker Model Runner（DMR）</td><td>Docker 运行本地 AI 模型的原生工具，在容器之外直接使用宿主机硬件，提供 OpenAI 等兼容端点</td></tr>
-  <tr><td>Docker Sandboxes</td><td>基于 microVM 为 AI 编程助手提供隔离开发环境的产品（<code>docker sbx</code>）</td></tr>
-  <tr><td>Docker Scout</td><td>Docker 的漏洞扫描与供应链分析服务，集成在 CLI、Docker Hub 等处</td></tr>
-  <tr><td>Dockerfile</td><td>告诉 Docker 如何把应用构建成镜像的纯文本指令文件</td></tr>
-  <tr><td>etcd</td><td>Docker Swarm 使用的开源分布式数据库</td></tr>
-  <tr><td>GGUF</td><td>存储 LLM 权重和元数据的二进制文件格式</td></tr>
-  <tr><td>镜像 Image</td><td>包含应用代码、所有依赖和启动元数据的只读包，也叫 OCI 镜像、容器镜像、Docker 镜像</td></tr>
-  <tr><td>Ingress 网络</td><td>所有 Swarm 集群上都有的隐藏网络，用于向外部客户端发布服务（路由网格）</td></tr>
-  <tr><td>内核命名空间 Namespace</td><td>Linux 内核功能，Docker 用它把容器与宿主机进程及其他容器隔离开</td></tr>
-  <tr><td>层 Layer</td><td>镜像由层堆叠而成，每层包含对下层的修改；上层文件会遮盖下层同名文件</td></tr>
-  <tr><td>libcontainer / libnetwork</td><td>Docker 用来创建容器（通过 runc）/ 创建和管理容器网络的 Go 库</td></tr>
-  <tr><td>llama.cpp / vLLM</td><td>开源的 LLM 推理引擎。前者轻量、能在消费级 CPU 上运行，后者面向 GPU 上的高吞吐生产场景；都是 DMR 的可选后端</td></tr>
-  <tr><td>大语言模型 LLM</td><td>能参与人类对话、生成类人回答的 AI 模型</td></tr>
-  <tr><td>Manifest（OCI 清单）</td><td>描述镜像、模型等 OCI 制品的配置和层的 JSON 文档</td></tr>
-  <tr><td>Manifest list / Image index</td><td>一个标签下支持哪些架构的列表，是多架构镜像的基础</td></tr>
-  <tr><td>微服务 Microservices</td><td>现代应用的设计模式：每个功能作为独立的小应用（容器）开发，通过 API 协同工作</td></tr>
-  <tr><td>多架构构建</td><td>用一条 <code>docker build</code> 命令为多个平台/架构构建镜像</td></tr>
-  <tr><td>多阶段构建</td><td>一个 Dockerfile 中有多个 <code>FROM</code>，后面的阶段用 <code>COPY --from</code> 只拿需要的产物，得到很小的生产镜像</td></tr>
-  <tr><td>观察状态 Observed state</td><td>集群和应用当前的实际状态。Swarm 总在努力让它等于期望状态</td></tr>
-  <tr><td>OCI 开放容器倡议</td><td>负责制定镜像、运行时、分发等底层容器标准的轻量治理组织</td></tr>
-  <tr><td>OpenAI 兼容端点</td><td>按 OpenAI API 规范接收请求、返回响应的 API 服务</td></tr>
-  <tr><td>编排器 Orchestrator</td><td>部署和管理应用的软件，如 Docker Swarm 和 Kubernetes：保持应用健康、扩缩容等</td></tr>
-  <tr><td>Overlay 网络</td><td>横跨多个 swarm 节点的扁平二层网络，基于 VXLAN；不同主机上的容器可直接通信</td></tr>
-  <tr><td>Push / Pull</td><td>把镜像上传到 / 从仓库下载</td></tr>
-  <tr><td>量化 Quantization</td><td>在不过多牺牲准确度的前提下减小 AI 模型体积和内存需求的方法</td></tr>
-  <tr><td>调和 Reconciliation</td><td>持续观察应用状态、确保观察状态等于期望状态的过程</td></tr>
-  <tr><td>仓库 Registry / 镜像库 Repository</td><td>集中存放镜像的地方 / 仓库中存放一组相关镜像的区域，可按库设置权限</td></tr>
-  <tr><td>runc</td><td>OCI 运行时规范的参考实现，Docker 的低层运行时，读作 “run see”</td></tr>
-  <tr><td>SBOM</td><td>软件物料清单：镜像中所有软件包及版本的列表，漏洞扫描和供应链安全的基础</td></tr>
-  <tr><td>seccomp</td><td>Linux 内核功能，Docker 用它限制容器可用的系统调用</td></tr>
-  <tr><td>Secret 机密</td><td>Docker 在运行时安全地向容器注入敏感数据的方式</td></tr>
-  <tr><td>Service 服务</td><td>Docker Swarm 的对象，为容器增加自我修复、扩缩容、滚动更新和回滚能力</td></tr>
-  <tr><td>Sigstore / Cosign</td><td>现代的 OCI 原生镜像签名方案，支持基于身份的无密钥签名，是 DCT 的主要替代品</td></tr>
-  <tr><td>Spin</td><td>让构建和运行 Wasm 应用变得简单的框架，最初由 Fermyon 创建</td></tr>
-  <tr><td>Swarm</td><td>Docker 原生的编排平台，Kubernetes 的轻量替代</td></tr>
-  <tr><td>卷 Volume</td><td>容器存放需要保留的重要数据的地方，可以独立于容器创建和删除</td></tr>
-  <tr><td>Wasm（WebAssembly）</td><td>一种新的虚拟指令集架构，比传统容器更小、更快、更安全、更便携，可在任何有 Wasm 运行时的地方运行</td></tr>
-  <tr><td>YAML</td><td>一种数据序列化格式，Compose 文件用它编写；它是 JSON 的超集</td></tr>
-</table></div>
-
-<h2 id="changes">本教程相对原书的更新一览</h2>
-
-<p>方便已经读过原书的读者快速了解差异：</p>
-
-<div class="tw"><table>
-  <tr><th>章节</th><th>更新内容</th></tr>
-  <tr><td>第 3 章</td><td>Linux 安装改用 Docker 官方 apt 源（原书用 snap）；Engine 29 最低 API 1.44；containerd 镜像存储成为默认；rootless 模式</td></tr>
-  <tr><td>第 5 章</td><td>containerd 2.x；<code>live-restore</code> 配置</td></tr>
-  <tr><td>第 6 章</td><td>snapshotter 取代 graph driver；<code>--tree</code> 视图；Docker Desktop 移除 Scout 视图</td></tr>
-  <tr><td>第 7 章</td><td>退出码 137 与 PID 1 信号处理；<code>--init</code>；更正 Compose 与 Swarm 的重启策略写法；资源限制</td></tr>
-  <tr><td>第 8 章</td><td>构建检查 <code>--check</code>；exec 形式 CMD；.dockerignore；构建机密；Bake；构建历史</td></tr>
-  <tr><td>第 9 章</td><td>Compose v5；废弃 <code>version:</code> 和 <code>docker-compose</code>；更正卷挂载路径；healthcheck 依赖、watch、profiles</td></tr>
-  <tr><td>第 10 章</td><td>DMR 支持 Linux Engine；vLLM / Diffusers 后端；Anthropic / Ollama 兼容 API；Compose 顶层 <code>models:</code> 语法</td></tr>
-  <tr><td>第 11 章</td><td>Docker Desktop Wasm 功能已弃用</td></tr>
-  <tr><td>第 13 章</td><td>Engine 28 的网络加固；nftables；<code>ip</code> 命令替代 <code>brctl</code>；日志轮转</td></tr>
-  <tr><td>第 14 章</td><td>更正：数据平面加密使用 IPsec</td></tr>
-  <tr><td>第 15 章</td><td>新增绑定挂载、tmpfs、<code>-v</code> 与 <code>--mount</code>、卷备份</td></tr>
-  <tr><td>第 16 章</td><td>DCT 退役，改用 Cosign；Docker Hardened Images 免费；cgroup v1 弃用；Compose secrets；加固清单</td></tr>
-  <tr><td>第 17–21 章</td><td>原书没有的实战篇：排错手册、容器化开发环境与 Dev Containers、GitHub Actions 镜像流水线、部署到服务器（含 docker context）、Node / Python / Go / Java 生产级 Dockerfile</td></tr>
-</table></div>
 
 <div class="box tip">
-  <div class="t">&#128161; 最后的话</div>
+  <div class="t">&#128161; 自己动手查：镜像胖在哪里</div>
   <p>
-    Docker、AI 和云原生生态变化很快，两三年前的资料可能已经过时。遇到和本教程不一致的地方，以
-    <a href="https://docs.docker.com">Docker 官方文档</a>和各项目的发布说明为准。祝你玩转容器！&#128051;
+    <code>docker history --no-trunc 镜像</code> 列出每一层的大小和产生它的指令，按 SIZE 一看就知道大头在哪。
+    想看某一层里具体有哪些文件，可以用开源工具 <a href="https://github.com/wagoodman/dive">dive</a>，它能逐层浏览文件树，还会估算“浪费的空间”。
   </p>
+</div>
+
+<h2 id="v2">第 ② 步：换成 slim</h2>
+
+<p>只改一个词：</p>
+
+<div class="code" data-lang="dockerfile" data-file="v2.Dockerfile（只改了第一行）">
+<pre>
+FROM python:3.14-slim
+</pre>
+</div>
+
+<div class="ver">
+  <div><b>250 MB</b><span>解压后（−80%）</span></div>
+  <div><b>152 MB</b><span>压缩后（−71%）</span></div>
+  <div><b>155</b><span>已知漏洞（严重 0，高危 46）</span></div>
+  <div><b>2</b><span>可修复的严重 + 高危</span></div>
+</div>
+
+<div class="box key">
+  <div class="t">&#9733; 投入产出比最高的一步</div>
+  <p>
+    改一个词，体积减少 1 GB，漏洞从 3454 个降到 155 个。<strong>没装的软件不会有漏洞</strong> —— 编译工具链带来的几千个漏洞，随着工具链一起消失了。
+    如果你只打算做一件事，就做这一步。
+  </p>
+</div>
+
+<h2 id="v3">第 ③ 步：忽略杂物，调整顺序</h2>
+
+<div class="vs">
+  <div class="old"><div class="h">v3.Dockerfile</div>
+  <div class="code" data-lang="dockerfile"><pre>
+FROM python:3.14-slim
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY myapp ./myapp
+RUN useradd --system app
+USER app
+CMD ["uvicorn", "myapp.main:app", "--host", "0.0.0.0"]
+</pre></div></div>
+  <div class="new"><div class="h">.dockerignore</div>
+  <div class="code" data-lang="text"><pre>
+.venv
+tests
+.git
+__pycache__
+</pre></div></div>
+</div>
+
+<div class="ver">
+  <div><b>150 MB</b><span>解压后（−100 MB）</span></div>
+  <div><b>52.5 MB</b><span>压缩后（−65%）</span></div>
+  <div><b>155</b><span>已知漏洞（没变）</span></div>
+  <div><b>2</b><span>可修复的严重 + 高危</span></div>
+</div>
+
+<p>减掉的 100 MB 来自两处：</p>
+<ul>
+  <li><strong>94 MB 杂物</strong>：<code>.dockerignore</code> 让 <code>.venv</code> 和测试数据根本不进入构建上下文；只复制 <code>myapp/</code> 而不是整个目录，更是双保险。</li>
+  <li><strong>约 6 MB pip 缓存</strong>：<code>PIP_NO_CACHE_DIR=1</code> 让 pip 不在镜像里留下下载缓存（pip 安装层从 32.0 MB 降到 26.3 MB）。</li>
+</ul>
+
+<p>
+  压缩后的大小降得更多（152 → 52.5 MB），因为那些杂物是随机数据、几乎无法压缩；真实项目里的 <code>.git</code> 目录也常常压缩效果很差。
+  漏洞数没有变化 —— 杂物不是软件包。另外两处改动不影响体积，但同样重要：先复制依赖清单再复制代码，<strong>改代码时依赖层能命中缓存</strong>（第 8 章）；以非 root 用户运行（第 16 章）。
+</p>
+
+<h2 id="v4">第 ④ 步：多阶段构建 + uv</h2>
+
+<p>用第 21 章的模板：在构建阶段用 uv 按锁文件建立虚拟环境，运行阶段只复制这个虚拟环境：</p>
+
+<div class="code" data-lang="dockerfile" data-file="v4.Dockerfile">
+<pre>
+# syntax=docker/dockerfile:1
+FROM python:3.14-slim AS build
+COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /bin/
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_NO_DEV=1 UV_PYTHON_DOWNLOADS=0
+WORKDIR /app
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-install-project
+COPY pyproject.toml uv.lock ./
+COPY myapp ./myapp
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-editable
+
+FROM python:3.14-slim
+ENV PYTHONUNBUFFERED=1 PATH="/app/.venv/bin:$PATH"
+RUN useradd --system app
+WORKDIR /app
+COPY --from=build /app/.venv /app/.venv
+USER app
+CMD ["uvicorn", "myapp.main:app", "--host", "0.0.0.0"]
+</pre>
+</div>
+
+<div class="ver">
+  <div><b>140.6 MB</b><span>解压后（−10 MB）</span></div>
+  <div><b>48.9 MB</b><span>压缩后</span></div>
+  <div><b>155</b><span>已知漏洞（没变）</span></div>
+  <div><b>2</b><span>可修复的严重 + 高危</span></div>
+</div>
+
+<p>
+  这一步只省了 10 MB（虚拟环境 16.8 MB，对比 pip 安装层 26.3 MB），看起来不起眼。这是一个<strong>诚实的结果</strong>：
+  我们的依赖全都有预编译的 wheel，构建阶段本来就不需要编译器。多阶段构建的巨大收益出现在<strong>构建需要重型工具</strong>的时候：
+  要装 <code>build-essential</code> 编译 C 扩展的 Python 项目、要 JDK 的 Java 项目、要完整 Go 工具链的 Go 项目（见本章后面的 Go 对比）。
+  而且即使体积收益小，它也带来了锁文件保证的可重复构建，以及“构建环境和运行环境分离”这个好习惯。
+</p>
+
+<h2 id="v4np">第 ⑤ 步：卸载用不到的 pip</h2>
+
+<p>第 ④ 步还剩 2 个可修复的高危漏洞，查一下扫描报告，它们来自哪里？</p>
+
+<div class="code" data-lang="text">
+<pre>
+Python (python-pkg)
+  HIGH  msgpack     1.1.2   → 1.2.1    GHSA-6v7p-g79w-8964
+  HIGH  setuptools  70.3.0  → 78.1.1   CVE-2025-47273
+</pre>
+</div>
+
+<p>
+  我们的应用根本不依赖 msgpack 和 setuptools。追查下去才发现，它们是基础镜像里<strong>预装的 pip 内部打包（vendor）的组件</strong>。
+  而我们的运行阶段用的是 uv 创建的虚拟环境，pip 完全用不上。那就在运行阶段卸载它：
+</p>
+
+<div class="code" data-lang="dockerfile" data-file="v4np.Dockerfile（在运行阶段加一行）">
+<pre>
+RUN /usr/local/bin/python -m pip uninstall -y pip    # 用系统解释器，虚拟环境里没有 pip
+USER app
+</pre>
+</div>
+
+<div class="ver">
+  <div><b>145.0 MB</b><span>解压后（反而 +4.4 MB！）</span></div>
+  <div><b>50.6 MB</b><span>压缩后（+1.7 MB）</span></div>
+  <div><b>152</b><span>已知漏洞</span></div>
+  <div><b>0</b><span>可修复的严重 + 高危 ✓</span></div>
+</div>
+
+<p>可修复的高危漏洞清零了，但<strong>镜像反而变大了</strong>。为什么？</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="在后面的层中删除文件只是加了遮盖标记，下层文件仍然存在">
+  <rect class="bx-g" x="60" y="30" width="330" height="48" rx="8"/>
+  <text class="ttl on-g" x="225" y="52" text-anchor="middle">新的一层：pip uninstall</text>
+  <text class="sm" x="225" y="70" text-anchor="middle">只写入“pip 已删除”的遮盖标记（whiteout）+ 一些元数据</text>
+  <rect class="bx-a" x="60" y="88" width="330" height="48" rx="8"/>
+  <text class="ttl on-a" x="225" y="110" text-anchor="middle">虚拟环境层 16.8 MB</text>
+  <rect class="bx-b" x="60" y="146" width="330" height="80" rx="8"/>
+  <text class="ttl on-b" x="225" y="170" text-anchor="middle">python:3.14-slim 基础镜像的层</text>
+  <rect class="bx-r" x="130" y="186" width="190" height="28" rx="6"/>
+  <text class="sm on-r" x="225" y="205" text-anchor="middle">pip 的文件仍然在这里</text>
+  <path class="ln-r" d="M80 80 V200 H126" style="stroke-dasharray:5 4" marker-end="url(#ar-r)"/>
+  <text class="sm on-r" x="86" y="142">遮住</text>
+
+  <rect class="bx" x="440" y="30" width="300" height="196" rx="12"/>
+  <text class="ttl" x="590" y="56" text-anchor="middle">结果</text>
+  <text class="sm" x="460" y="84">✓ 容器里看不到 pip，无法运行它</text>
+  <text class="sm" x="460" y="106">✓ 扫描器分析的是合并后的文件系统，</text>
+  <text class="sm" x="476" y="124">所以不再报告这两个漏洞</text>
+  <text class="sm on-r" x="460" y="152">✗ 下层的 pip 文件还在镜像里，</text>
+  <text class="sm on-r" x="476" y="170">照样要下载、照样占磁盘</text>
+  <text class="sm on-r" x="460" y="198">✗ 新层本身还要 4.4 MB</text>
+  <text class="lbl" x="380" y="256" text-anchor="middle">层是只读、叠加的（第 6 章）：删除 = 遮盖，不是真的删除</text>
+</svg>
+<figcaption>图 22-2　在后面的层里删除文件，镜像不会变小</figcaption>
+</figure>
+
+<div class="box key">
+  <div class="t">&#9733; 瘦身的铁律：不要先放进来，再删掉</div>
+  <p>
+    在一个 <code>RUN</code> 里下载、另一个 <code>RUN</code> 里删除，前一层的文件永远留在镜像里。正确的做法有三种：
+    <strong>在同一个 <code>RUN</code> 里装完就清理</strong>（比如 <code>apt-get install … &amp;&amp; rm -rf /var/lib/apt/lists/*</code>）；
+    用<strong>多阶段构建</strong>只复制需要的产物；或者<strong>选一个本来就没有这些东西的基础镜像</strong>。
+    本例中卸载 pip 对安全有意义（被遮盖的文件在运行时不可见），但如果追求体积，就应该换用不带 pip 的基础镜像。
+  </p>
+</div>
+
+<h2 id="v5">第 ⑥⑦ 步：换成 alpine</h2>
+
+<p>把第 ④ 步两个阶段的基础镜像都换成 <code>python:3.14-alpine</code>（用户创建命令相应改为 <code>adduser -S -H app</code>），然后再做一次 ⑤ 的卸载 pip：</p>
+
+<div class="tw"><table>
+  <tr><th>版本</th><th>解压后</th><th>压缩后</th><th>漏洞总数</th><th>可修复的严重 + 高危</th></tr>
+  <tr><td>⑥ alpine + 多阶段 + uv</td><td>67.9 MB</td><td>23.4 MB</td><td>3（高危 2，中危 1）</td><td>2（还是 pip 那两个）</td></tr>
+  <tr><td>⑦ 再卸载 pip</td><td>72.3 MB</td><td>25.2 MB</td><td><strong>0</strong></td><td><strong>0</strong></td></tr>
+</table></div>
+
+<p>
+  alpine 版本的体积是 slim 版本的一半，更引人注目的是漏洞：Debian 系统层的 152 个漏洞，在 Alpine 上是 0 个。
+  最终版的 ⑦ 已经实际启动验证过，<code>/health</code> 正常返回。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 这次 alpine 顺利，是因为运气好</div>
+  <p>
+    alpine 用的是 musl libc。本例能顺利运行，是因为所有依赖（包括用 Rust 编译的 <code>pydantic-core</code>）都提供了 musllinux 的预编译 wheel。
+    如果你的项目依赖某个只有 glibc wheel 的包，在 alpine 上就只能现场编译 —— 构建变慢、镜像里要装编译器，甚至运行时出现细微差异（第 21 章）。
+    <strong>换 alpine 之前，先在 CI 里完整跑一遍测试。</strong>
+  </p>
+</div>
+
+<h2 id="summary-chart">全程对比</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 312" role="img" aria-label="Python 示例镜像各个瘦身步骤的大小">
+  <line class="grid" x1="240.0" y1="22" x2="240.0" y2="286"/>
+  <text class="sm" x="240.0" y="302" text-anchor="middle">0</text>
+  <line class="grid" x1="316.9" y1="22" x2="316.9" y2="286"/>
+  <text class="sm" x="316.9" y="302" text-anchor="middle">250</text>
+  <line class="grid" x1="393.8" y1="22" x2="393.8" y2="286"/>
+  <text class="sm" x="393.8" y="302" text-anchor="middle">500</text>
+  <line class="grid" x1="470.8" y1="22" x2="470.8" y2="286"/>
+  <text class="sm" x="470.8" y="302" text-anchor="middle">750</text>
+  <line class="grid" x1="547.7" y1="22" x2="547.7" y2="286"/>
+  <text class="sm" x="547.7" y="302" text-anchor="middle">1000</text>
+  <line class="grid" x1="624.6" y1="22" x2="624.6" y2="286"/>
+  <text class="sm" x="624.6" y="302" text-anchor="middle">1250</text>
+  <text class="sm" x="640.0" y="16" text-anchor="end">解压后大小（MB）</text>
+  <g class="row"><title>① 直接写（python:3.14）：解压后 1268.4 MB，压缩后 523.9 MB，10 层</title>
+    <rect class="bar-hit" x="0" y="32.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="46.0" text-anchor="end">① 直接写</text>
+    <text class="sm" x="230" y="60.0" text-anchor="end">python:3.14</text>
+    <path class="bar" d="M240.0 38.0 H626.3 Q630.3 38.0 630.3 42.0 V54.0 Q630.3 58.0 626.3 58.0 H240.0 Z"/>
+    <text class="val" x="638.3" y="52.0">1268.4 MB</text>
+  </g>
+  <g class="row"><title>② 换 slim（python:3.14-slim）：解压后 250.3 MB，压缩后 152.3 MB，7 层</title>
+    <rect class="bar-hit" x="0" y="68.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="82.0" text-anchor="end">② 换 slim</text>
+    <text class="sm" x="230" y="96.0" text-anchor="end">python:3.14-slim</text>
+    <path class="bar" d="M240.0 74.0 H313.0 Q317.0 74.0 317.0 78.0 V90.0 Q317.0 94.0 313.0 94.0 H240.0 Z"/>
+    <text class="val" x="325.0" y="88.0">250.3 MB</text>
+  </g>
+  <g class="row"><title>③ 忽略杂物 + 调整顺序（.dockerignore 等）：解压后 150.2 MB，压缩后 52.5 MB，9 层</title>
+    <rect class="bar-hit" x="0" y="104.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="118.0" text-anchor="end">③ 忽略杂物 + 调整顺序</text>
+    <text class="sm" x="230" y="132.0" text-anchor="end">.dockerignore 等</text>
+    <path class="bar" d="M240.0 110.0 H282.2 Q286.2 110.0 286.2 114.0 V126.0 Q286.2 130.0 282.2 130.0 H240.0 Z"/>
+    <text class="val" x="294.2" y="124.0">150.2 MB</text>
+  </g>
+  <g class="row"><title>④ 多阶段 + uv（slim 运行阶段）：解压后 140.6 MB，压缩后 48.9 MB，7 层</title>
+    <rect class="bar-hit" x="0" y="140.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="154.0" text-anchor="end">④ 多阶段 + uv</text>
+    <text class="sm" x="230" y="168.0" text-anchor="end">slim 运行阶段</text>
+    <path class="bar" d="M240.0 146.0 H279.3 Q283.3 146.0 283.3 150.0 V162.0 Q283.3 166.0 279.3 166.0 H240.0 Z"/>
+    <text class="val" x="291.3" y="160.0">140.6 MB</text>
+  </g>
+  <g class="row"><title>⑤ 卸载 pip（在 ④ 上追加一层）：解压后 145.0 MB，压缩后 50.6 MB，8 层</title>
+    <rect class="bar-hit" x="0" y="176.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="190.0" text-anchor="end">⑤ 卸载 pip</text>
+    <text class="sm" x="230" y="204.0" text-anchor="end">在 ④ 上追加一层</text>
+    <path class="bar" d="M240.0 182.0 H280.6 Q284.6 182.0 284.6 186.0 V198.0 Q284.6 202.0 280.6 202.0 H240.0 Z"/>
+    <text class="val" x="292.6" y="196.0">145.0 MB</text>
+  </g>
+  <g class="row"><title>⑥ 换 alpine（多阶段 + uv）：解压后 67.9 MB，压缩后 23.4 MB，7 层</title>
+    <rect class="bar-hit" x="0" y="212.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="226.0" text-anchor="end">⑥ 换 alpine</text>
+    <text class="sm" x="230" y="240.0" text-anchor="end">多阶段 + uv</text>
+    <path class="bar" d="M240.0 218.0 H256.9 Q260.9 218.0 260.9 222.0 V234.0 Q260.9 238.0 256.9 238.0 H240.0 Z"/>
+    <text class="val" x="268.9" y="232.0">67.9 MB</text>
+  </g>
+  <g class="row"><title>⑦ alpine + 卸载 pip（最终版）：解压后 72.3 MB，压缩后 25.2 MB，8 层</title>
+    <rect class="bar-hit" x="0" y="248.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="262.0" text-anchor="end">⑦ alpine + 卸载 pip</text>
+    <text class="sm" x="230" y="276.0" text-anchor="end">最终版</text>
+    <path class="bar" d="M240.0 254.0 H258.2 Q262.2 254.0 262.2 258.0 V270.0 Q262.2 274.0 258.2 274.0 H240.0 Z"/>
+    <text class="val" x="270.2" y="268.0">72.3 MB</text>
+  </g>
+  <line class="axis" x1="240" y1="22" x2="240" y2="286"/>
+</svg>
+<figcaption>图 22-3　七个版本的解压后大小（鼠标悬停可看压缩后大小和层数）</figcaption>
+</figure>
+
+<div class="tw"><table>
+  <tr><th>版本</th><th>基础镜像</th><th>层数</th><th>解压后</th><th>压缩后</th><th>漏洞总数（严重 / 高危）</th><th>可修复严重 + 高危</th></tr>
+  <tr><td>① 直接写</td><td>python:3.14</td><td>10</td><td>1268.4 MB</td><td>523.9 MB</td><td>3454（18 / 311）</td><td>11</td></tr>
+  <tr><td>② 换 slim</td><td>3.14-slim</td><td>7</td><td>250.3 MB</td><td>152.3 MB</td><td>155（0 / 46）</td><td>2</td></tr>
+  <tr><td>③ 忽略杂物 + 调整顺序</td><td>3.14-slim</td><td>9</td><td>150.2 MB</td><td>52.5 MB</td><td>155（0 / 46）</td><td>2</td></tr>
+  <tr><td>④ 多阶段 + uv</td><td>3.14-slim</td><td>7</td><td>140.6 MB</td><td>48.9 MB</td><td>155（0 / 46）</td><td>2</td></tr>
+  <tr><td>⑤ 卸载 pip</td><td>3.14-slim</td><td>8</td><td>145.0 MB</td><td>50.6 MB</td><td>152（0 / 44）</td><td>0</td></tr>
+  <tr><td>⑥ 换 alpine</td><td>3.14-alpine</td><td>7</td><td>67.9 MB</td><td>23.4 MB</td><td>3（0 / 2）</td><td>2</td></tr>
+  <tr><td>⑦ alpine + 卸载 pip</td><td>3.14-alpine</td><td>8</td><td>72.3 MB</td><td>25.2 MB</td><td>0</td><td>0</td></tr>
+</table></div>
+
+<p>从 ① 到 ⑦：解压后大小 <strong>−94%</strong>，每次部署要拉取的数据 <strong>−95%</strong>（524 MB → 25 MB），已知漏洞 <strong>3454 → 0</strong>。</p>
+
+<h2 id="vulns">正确解读漏洞数字</h2>
+
+<p>看到 slim 版本有 152 个漏洞、其中 44 个高危，你可能会紧张。但把扫描结果按状态分类后，情况完全不同：</p>
+
+<div class="tw"><table>
+  <tr><th>状态</th><th>含义</th><th>第 ⑤ 步中的数量</th></tr>
+  <tr><td><code>affected</code></td><td>受影响，但发行版<strong>还没有、或不打算</strong>发布修复（常见理由：风险极低、只在特定配置下可利用）</td><td>150</td></tr>
+  <tr><td><code>fix_deferred</code></td><td>发行版决定推迟修复</td><td>2</td></tr>
+  <tr><td><code>fixed</code></td><td><strong>已有修复版本，升级即可</strong></td><td>0</td></tr>
+</table></div>
+
+<ul>
+  <li><strong>总数不等于风险。</strong>Debian 会把大量“理论上受影响、实际上几乎无法利用”的问题也登记在案，所以 Debian 系镜像的漏洞总数天然偏高。</li>
+  <li><strong>真正该盯的是“可修复的严重 + 高危”</strong>，这也是第 19 章质量门里 <code>ignore-unfixed: true</code> 的原因 —— 否则你的流水线会因为一个谁也修不了的漏洞永远红着。</li>
+  <li><strong>没修复的漏洞也不是可以永远忽略的。</strong>定期重建镜像以获取最新补丁；对真正影响你的漏洞，评估是否需要换基础镜像。</li>
+  <li><strong>软件包越少，攻击面越小。</strong>这一点在 ①→② 和 ②→⑥ 两次跳变中体现得淋漓尽致。</li>
+</ul>
+
+<h2 id="go">对照：Go 应用</h2>
+
+<p>用一个同样只有健康检查接口的 Go 程序，对比第 21 章的单阶段和多阶段写法：</p>
+
+<div class="vs">
+  <div class="old"><div class="h">单阶段</div>
+  <div class="code" data-lang="dockerfile"><pre>
+FROM golang:1.27-alpine
+WORKDIR /src
+COPY . .
+RUN go build -o /server .
+CMD ["/server"]
+</pre></div></div>
+  <div class="new"><div class="h">多阶段 + distroless</div>
+  <div class="code" data-lang="dockerfile"><pre>
+FROM golang:1.27-alpine AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-s -w" -o /server .
+
+FROM gcr.io/distroless/static-debian13:nonroot
+COPY --from=build /server /server
+ENTRYPOINT ["/server"]
+</pre></div></div>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 132" role="img" aria-label="Go 示例：单阶段与多阶段镜像大小对比">
+  <line class="grid" x1="240.0" y1="22" x2="240.0" y2="106"/>
+  <text class="sm" x="240.0" y="122" text-anchor="middle">0</text>
+  <line class="grid" x1="340.0" y1="22" x2="340.0" y2="106"/>
+  <text class="sm" x="340.0" y="122" text-anchor="middle">100</text>
+  <line class="grid" x1="440.0" y1="22" x2="440.0" y2="106"/>
+  <text class="sm" x="440.0" y="122" text-anchor="middle">200</text>
+  <line class="grid" x1="540.0" y1="22" x2="540.0" y2="106"/>
+  <text class="sm" x="540.0" y="122" text-anchor="middle">300</text>
+  <line class="grid" x1="640.0" y1="22" x2="640.0" y2="106"/>
+  <text class="sm" x="640.0" y="122" text-anchor="middle">400</text>
+  <text class="sm" x="640.0" y="16" text-anchor="end">解压后大小（MB）</text>
+  <g class="row"><title>单阶段：361.7 MB（压缩后 101.9 MB）</title>
+    <rect class="bar-hit" x="0" y="32.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="46.0" text-anchor="end">单阶段</text>
+    <text class="sm" x="230" y="60.0" text-anchor="end">golang:1.27-alpine</text>
+    <path class="bar" d="M240.0 38.0 H597.7 Q601.7 38.0 601.7 42.0 V54.0 Q601.7 58.0 597.7 58.0 H240.0 Z"/>
+    <text class="val" x="609.7" y="52.0">361.7 MB</text>
+  </g>
+  <g class="row"><title>多阶段：9.2 MB（压缩后 3.4 MB）</title>
+    <rect class="bar-hit" x="0" y="68.0" width="760" height="32"/>
+    <text class="lbl" x="230" y="82.0" text-anchor="end">多阶段 + distroless</text>
+    <text class="sm" x="230" y="96.0" text-anchor="end">static-debian13:nonroot</text>
+    <path class="bar" d="M240.0 74.0 H245.2 Q249.2 74.0 249.2 78.0 V90.0 Q249.2 94.0 245.2 94.0 H240.0 Z"/>
+    <text class="val" x="257.2" y="88.0">9.2 MB</text>
+  </g>
+  <line class="axis" x1="240" y1="22" x2="240" y2="106"/>
+</svg>
+<figcaption>图 22-4　Go 应用：单阶段 361.7 MB，多阶段 9.2 MB（−97%）</figcaption>
+</figure>
+
+<p>
+  这就是多阶段构建真正发威的场景：单阶段镜像里装着整个 Go 工具链（编译器、标准库源码），而运行程序只需要一个静态二进制。
+  多阶段版本压缩后只有 <strong>3.4 MB</strong>。两个版本的漏洞扫描结果都是 0。实际启动后，distroless 镜像里连 <code>id</code> 这样的命令都没有 ——
+  攻击者即使攻破了程序，也找不到 shell 和常用工具。
+</p>
+
+<h2 id="priority">瘦身的优先级</h2>
+
+<p>根据实测结果，按“收益 ÷ 成本”排序：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="瘦身手段按收益和成本排序">
+  <text class="lbl" x="20" y="22">按先后顺序做：越靠上，收益越大、成本越低</text>
+  <rect class="bx-g" x="20" y="36" width="720" height="50" rx="10"/>
+  <text class="ttl on-g" x="40" y="58">1. 换 slim 基础镜像</text>
+  <text class="sm" x="40" y="76">改一个词 · 本例 −1018 MB、漏洞 −3299 · 几乎没有兼容性风险</text>
+  <rect class="bx-g" x="20" y="94" width="720" height="50" rx="10"/>
+  <text class="ttl on-g" x="40" y="116">2. 加 .dockerignore，只复制需要的文件</text>
+  <text class="sm" x="40" y="134">几分钟 · 本例 −94 MB · 还能防止密钥和 .git 泄露</text>
+  <rect class="bx-a" x="20" y="152" width="720" height="50" rx="10"/>
+  <text class="ttl on-a" x="40" y="174">3. 多阶段构建</text>
+  <text class="sm" x="40" y="192">半小时 · 构建需要编译器时收益巨大（Go 示例 −97%），否则收益较小但习惯很好</text>
+  <rect class="bx-a" x="20" y="210" width="720" height="50" rx="10"/>
+  <text class="ttl on-a" x="40" y="232">4. 同一层里清理缓存，不要“先装后删”</text>
+  <text class="sm" x="40" y="250">随手可做 · 本例 pip 缓存 −6 MB · apt、npm 的缓存往往更大</text>
+  <rect class="bx-b" x="20" y="268" width="720" height="50" rx="10"/>
+  <text class="ttl on-b" x="40" y="290">5. alpine / distroless / Hardened Images</text>
+  <text class="sm" x="40" y="308">需要测试 · 本例再 −50%、漏洞归零 · 要确认兼容性（musl、没有 shell）</text>
+</svg>
+<figcaption>图 22-5　瘦身手段的优先级</figcaption>
+</figure>
+
+<div class="box note">
+  <div class="t">&#9432; 还可以更进一步</div>
+  <ul>
+    <li><strong>Docker Hardened Images</strong>（第 16 章）：Docker 维护的精简加固镜像，很多语言都有“不带包管理器和 shell”的运行时变体，相当于官方替你做完了 ⑤⑥⑦。本章没有测量它，因为需要登录它的仓库。</li>
+    <li><strong>distroless</strong>：Go、Java 等有现成的 distroless 运行时镜像。它的 Python 镜像使用发行版自带的 Python 版本，不一定和你需要的版本一致，选用前要确认。</li>
+    <li><strong>不要走火入魔：</strong>镜像从 72 MB 压到 60 MB 的收益，远不如花同样的时间把测试写好。本章的前两步已经拿到了 90% 以上的收益。</li>
+  </ul>
+</div>
+
+<h2 id="myths">几个常见误区</h2>
+
+<div class="tw"><table>
+  <tr><th>误区</th><th>事实</th></tr>
+  <tr><td>“我在最后一个 RUN 里 <code>rm -rf</code> 了缓存，镜像就小了”</td><td>只有在<strong>同一个</strong> RUN 里产生和删除才有效，否则文件留在之前的层里（本章第 ⑤ 步实测 +4.4 MB）</td></tr>
+  <tr><td>“层越少越好，把所有 RUN 合成一个”</td><td>层数本身几乎不影响性能。过度合并反而破坏缓存（改一点就要全部重建）。按“变化频率”分层比按“数量最少”分层更重要</td></tr>
+  <tr><td>“镜像越小越好，一律用 scratch”</td><td>越小越难调试，兼容性要求越高。先拿到大头收益，再按需要取舍。调试可以用第 7 章的 <code>docker debug</code></td></tr>
+  <tr><td>“漏洞数为 0 就安全了”</td><td>扫描器只能发现<strong>已知</strong>漏洞，也看不到你自己代码里的问题和错误配置。它是必要条件，不是充分条件</td></tr>
+  <tr><td>“alpine 一定最小最好”</td><td>对 Go 这类静态二进制，distroless/scratch 更小；对依赖 glibc wheel 的 Python 项目，alpine 可能让构建更慢、镜像更大</td></tr>
+</table></div>
+
+<h2 id="reproduce">自己重做这个实验</h2>
+
+<p>下面是本章测量方法的要点，你可以用它来评估自己的镜像：</p>
+
+<div class="code" data-lang="bash">
+<pre>
+# 构建并查看大小
+$ docker build -t myapp:v1 -f v1.Dockerfile .
+$ docker image ls myapp
+
+# 每一层的大小与来源
+$ docker history myapp:v1
+
+# 漏洞扫描：Trivy（只看可修复的严重 / 高危）或 Docker Scout
+$ trivy image --severity CRITICAL,HIGH --ignore-unfixed myapp:v1
+$ docker scout quickview myapp:v1
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 安装扫描工具也要当心供应链</div>
+  <p>
+    2026 年 3 月 Trivy 本身就遭遇过供应链攻击，恶意版本被发布到 GitHub 和 Docker Hub（详见第 19 章）。
+    安装任何安全工具都应该：从官方渠道下载固定版本，校验官方发布的 SHA256 校验和（最好再用 cosign 验证签名），不要盲目使用 <code>latest</code>。
+    本章实验使用的是 Trivy 0.74.0，下载后先校验了官方的 SHA256 再运行。
+  </p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<ul>
+  <li>同一个应用，从 ① 到 ⑦：1268 MB → 72 MB，拉取量 524 MB → 25 MB，已知漏洞 3454 → 0。</li>
+  <li>收益最大的一步是把 <code>python:3.14</code> 换成 <code>python:3.14-slim</code>：改一个词，减少 80% 的体积和 95% 以上的漏洞。</li>
+  <li><code>.dockerignore</code> 和只复制需要的文件，能挡住大量杂物，压缩后的收益尤其明显。</li>
+  <li>多阶段构建在构建需要重型工具时收益巨大（Go 示例 −97%），否则收益较小但依然值得。</li>
+  <li>在后面的层里删除文件不会让镜像变小；要么在同一层清理，要么根本不放进来。</li>
+  <li>漏洞总数不等于风险，重点关注“可修复的严重 + 高危”；软件包越少，攻击面越小。</li>
+</ul>
+
+<div class="exercise">
+  <h3>&#9998; 动手练习</h3>
+  <ol>
+    <li>对你自己项目的镜像运行 <code>docker history</code>，找出最大的三层分别是什么，判断它们在运行时是否真的需要。</li>
+    <li>给你的项目加上 <code>.dockerignore</code>，比较前后的构建上下文大小（构建输出里 “transferring context” 那一行）和镜像大小。</li>
+    <li>写一个在两个 <code>RUN</code> 里分别下载和删除一个 50 MB 文件的 Dockerfile，再写一个在同一个 <code>RUN</code> 里完成的版本，对比两个镜像的大小，验证本章的“铁律”。</li>
+    <li>用 Trivy 或 Docker Scout 扫描你的镜像，分别统计“漏洞总数”和“可修复的严重 + 高危”，想一想哪个数字更值得放进 CI 的质量门。</li>
+  </ol>
 </div>
 
 <div id="pager"></div>

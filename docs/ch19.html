@@ -356,13 +356,28 @@ RUN npm test          # 测试失败 → 这一步失败 → 整个构建失败
           cache-from: type=gha
 
       - name: 扫描漏洞
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: app:scan
           severity: CRITICAL,HIGH
           ignore-unfixed: true         # 暂时没有修复版本的漏洞先不阻断
           exit-code: "1"               # 发现漏洞时让这一步失败
 </pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 为什么这里写的是一长串 SHA，而不是 @v0.36.0</div>
+  <p>
+    2026 年 3 月，Trivy 遭遇了一次严重的供应链攻击（CVE-2026-33634）：攻击者用窃取的凭据发布了恶意的 Trivy v0.69.4 二进制和镜像，
+    并把 <code>trivy-action</code> 仓库里 77 个版本标签中的 76 个<strong>强制改指向</strong>窃取凭据的恶意代码 ——
+    当时所有写着 <code>uses: aquasecurity/trivy-action@0.x.x</code> 的流水线，下一次运行就执行了恶意程序。
+  </p>
+  <p>
+    这正是第 6 章“标签可变、摘要不可变”在 CI 里的翻版。官方的首要修复建议就是<strong>把 action 固定到完整的 commit SHA</strong>，
+    上面那串 <code>ed142fd…</code> 就是 v0.36.0（事件之后发布、启用了不可变发布）对应的提交。
+    用 Dependabot 可以自动把 SHA 升级到新版本，同时保留行尾的版本注释。
+    详见<a href="https://github.com/aquasecurity/trivy/security/advisories/GHSA-69fq-xp46-6x23">官方安全公告</a>。
+  </p>
 </div>
 
 <figure>
@@ -585,7 +600,7 @@ jobs:
           cache-from: type=gha
 
       # 3. 质量门：有可修复的高危漏洞就失败
-      - uses: aquasecurity/trivy-action@v0.36.0
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
           image-ref: app:scan
           severity: CRITICAL,HIGH
@@ -640,7 +655,7 @@ jobs:
 
 <ul>
   <li><strong>最小权限：</strong>在工作流顶部显式声明 <code>permissions</code>，只给需要的权限（如本章的 <code>contents: read</code>、<code>packages: write</code>、<code>id-token: write</code>）。</li>
-  <li><strong>固定第三方 action 的版本：</strong>标签可以被移动（和镜像标签一样！），安全要求高的项目把 action 固定到完整的 commit SHA，例如 <code>uses: docker/build-push-action@&lt;40 位 SHA&gt; # v7.4.0</code>，并让 Dependabot 帮你更新。</li>
+  <li><strong>固定第三方 action 的版本：</strong>标签可以被移动（和镜像标签一样！）。2026 年 3 月 trivy-action 的 76 个标签被攻击者改指向恶意代码，就是活生生的例子（见上文扫描一节）。把 action 固定到完整的 commit SHA，例如 <code>uses: docker/build-push-action@&lt;40 位 SHA&gt; # v7.4.0</code>，并让 Dependabot 帮你更新。至少对第三方（非 GitHub、非 Docker 官方）的 action 要这样做。</li>
   <li><strong>凭据用 Secrets，令牌用最小作用域：</strong>Docker Hub 令牌只给“读写”而非“管理员”；能用 <code>GITHUB_TOKEN</code> 或 OIDC 就不用长期令牌。</li>
   <li><strong>小心 <code>pull_request_target</code>：</strong>它会在有写权限的上下文里运行，绝不要在其中构建或执行来自 fork 的代码。</li>
 </ul>

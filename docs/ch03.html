@@ -156,7 +156,7 @@
 $ docker version
 Client:
  Version:           29.8.0
- API version:       1.52
+ API version:       1.54
  OS/Arch:           darwin/arm64
  Context:           desktop-linux
  &lt;Snip&gt;
@@ -164,7 +164,7 @@ Client:
 Server: Docker Desktop 4.92.0
  Engine:
   Version:          29.8.0
-  API version:      1.52 (minimum version 1.44)
+  API version:      1.54 (minimum version 1.40)
   OS/Arch:          linux/arm64
  containerd:
   Version:          v2.3.5
@@ -187,10 +187,11 @@ Server: Docker Desktop 4.92.0
 </div>
 
 <div class="box new">
-  <div class="t">&#10024; 最新变化：Engine 29 提高了最低 API 版本</div>
+  <div class="t">&#10024; 最新变化：最低 API 版本的一次反复</div>
   <p>
-    Docker Engine 29 把服务端支持的<strong>最低 API 版本提高到 1.44</strong>（对应 Docker 25.0）。
-    如果你用很老的 docker 客户端或第三方工具连接新引擎，可能会看到 “client version is too old” 之类的错误，升级客户端即可。
+    Docker Engine 29.0 曾把服务端支持的最低 API 版本从 1.24 一下子提高到 <strong>1.44</strong>（对应 Docker 25.0），导致不少老客户端和第三方工具报
+    “client version is too old”。<strong>29.3 起又放宽回 1.40</strong>（对应 Docker 19.03），也就是上面输出里的 <code>minimum version 1.40</code>。
+    如果你遇到这个报错，升级客户端或工具，或者把引擎升级到 29.3 以上即可。
   </p>
 </div>
 
